@@ -290,12 +290,8 @@ class BaseRunConfig(RunSettings):
 
     def validate(self) -> None:
         """Validate executable benchmark conditions before starting providers."""
-        if self.pack_extension is not None and (
-            self.benchmark is not None or not self.effective_localize_db
-        ):
-            raise ValueError(
-                "pack extensions require a localized language in a custom run"
-            )
+        if self.pack_extension is not None and not self.effective_localize_db:
+            raise ValueError("pack extensions require a localized language")
         if (
             self.benchmark is not None
             and self.communicate_scoring.scorer != CommunicateScorer.SEMANTIC

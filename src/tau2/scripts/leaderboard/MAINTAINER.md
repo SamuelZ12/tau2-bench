@@ -85,7 +85,12 @@ A 2.0 package is three files in `web/leaderboard/public/submissions/<name>/`:
 `benchmark-metadata.json`. voice-v2 packages are listed in the manifest's
 `voice_v2_submissions` array and shown as rows of the τ³-Voice **τ-i18n
 (Multilingual)** leaderboard, ranked with the paper cohort on task completion.
-1.x tabs are unaffected.
+voice-v2-banking and voice-v2-entity packages (`benchmark-submission.json` and
+`benchmark-metadata.json` only) go in `voice_v2_domain_submissions`. Each fills
+the Banking or Intake row of the voice-v2 package with the same model name,
+organization, agent provider, agent model and submission type, and never
+changes its Overall. Without a matching voice-v2 package it is shown only
+under its own domain. 1.x tabs are unaffected.
 
 1. **Review** the PR: the directory name equals
    `{model_name}_{model_organization}_{submission_date}` (slugified; the review

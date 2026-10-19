@@ -453,5 +453,5 @@ def test_schemas_are_current_and_manifest_has_a_2_0_key():
     manifest = LeaderboardManifest.model_validate_json(
         (SCHEMA_PATH.parent / "manifest.json").read_text()
     )
-    for name in manifest.voice_v2_submissions:
+    for name in manifest.voice_v2_submissions + manifest.voice_v2_domain_submissions:
         load_package(SCHEMA_PATH.parent / name)

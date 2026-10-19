@@ -514,7 +514,7 @@ def load_language(
 def load_run_language(config: "RunConfig") -> LoadedLanguage:
     """Load the language binding a run config selects."""
     extension = config.pack_extension
-    if extension is None and config.benchmark is None and config.effective_localize_db:
+    if extension is None and config.effective_localize_db:
         extension = extension_for_domain(config.language, config.domain)
     canonical_voice_v1 = (
         config.benchmark is not None

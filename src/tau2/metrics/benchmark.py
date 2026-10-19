@@ -25,6 +25,7 @@ from tau2.data_model.benchmark import (
     encode_conditions,
     shared_audio_config,
 )
+from tau2.data_model.elicitation import ElicitationStrategy
 from tau2.data_model.semantic_communication import CommunicateScorer
 from tau2.data_model.simulation import (
     Info,
@@ -34,7 +35,7 @@ from tau2.data_model.simulation import (
     TextRunConfig,
     VoiceRunConfig,
 )
-from tau2.runner.presets import binding_revision
+from tau2.runner.presets import binding_revision, load_cell_language
 
 
 class IncompleteSubmissionError(ValueError):
@@ -79,8 +80,14 @@ def _recorded_config(info: Info) -> RunConfig:
     assert record is not None
     conditions = record.conditions
     voice = conditions_mode(conditions) == "voice"
+    # Agent-directed elicitation calls use their own versioned prompt instead.
+    shared_prompt = (
+        conditions.elicitation is None
+        or conditions.elicitation.strategy != ElicitationStrategy.AGENT_DIRECTED
+    )
     if voice and (
-        info.voice_instruction_prompt_version != VOICE_INSTRUCTION_PROMPT_VERSION
+        info.voice_instruction_prompt_version
+        != (VOICE_INSTRUCTION_PROMPT_VERSION if shared_prompt else None)
         or conditions.voice_instruction_prompt_version
         != VOICE_INSTRUCTION_PROMPT_VERSION
     ):
@@ -124,10 +131,8 @@ def _authoritative_language(
     installation is supported. Missing or different versions fail explicitly;
     there is no fallback to a task or persona supplied inside the saved result.
     """
-    from tau2.multilingual.runtime import load_language
-
     try:
-        loaded = load_language(language, domain, mode=mode)
+        loaded = load_cell_language(language, domain, mode)
     except (OSError, ValueError) as exc:
         raise ValueError(
             f"Cannot load authoritative benchmark artifacts for {language}/{domain}; "
