@@ -7,45 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- 2.0 leaderboard packages: `tau2 submit prepare <matrix-root> --metadata-file
-  submitter.json --output DIR` writes `DIR/<model>_<org>_<date>/` with
-  `benchmark-submission.json`, `benchmark-diagnostics.json` (voice-v2) and
-  `benchmark-metadata.json` (schema `schema_benchmark_metadata.json`). The
-  leaderboard lists them under the manifest key `voice_v2_submissions` as
-  rows of the τ-i18n voice leaderboard, ranked with the paper cohort on task
-  completion, with a per-language × per-domain pass@1 and judge-measure
-  breakdown; 1.x tabs are unchanged. Evidence is uploaded to
-  `s3://sierra-tau-bench-public/submissions/<name>/trajectories/<language>/<domain>/`.
-
-### Changed
-- The frozen 2026-10-02 voice-v2 release adapter (`tau2 submit prepare
-  --historical-voice-v2 --judges-root ...`) now writes the same 2.0 package as
-  new runs instead of its own `VoiceV2Submission` format; judge diagnostics
-  record partial and missing verdicts as coverage gaps. New runs still must be
-  fully judged before `prepare` writes a package.
-- Docs for 2.0: a 2.0 section in the README, one page for running the text and
-  voice benchmarks (`docs/running-the-benchmark.md`, replacing
-  `docs/benchmark-runs.md`), a submission guide covering text-v1, voice-v2,
-  voice-v1 and 1.x, a glossary, and `docs/cli-reference.md` generated from
-  `--help` by `scripts/generate_cli_reference.py`.
-- `tau2 judges suite`/`summarize` and released-benchmark `tau2 run` (dry-run plan
-  and final score summary) print compact tables; `--json` restores the full JSON.
-  `tau2 judges ... --output FILE` saves the full export.
-- CLI startup no longer logs the registry contents, data directory or noise-bank
-  counts, so `--help` prints only help.
-
-### Deprecated
-
-### Removed
-- `tau2.scripts.leaderboard.voice_v2_submission`, `schema_voice_v2.json` and the
-  `--provider` / `--interaction-facts` flags of `tau2 submit prepare`.
-
-### Fixed
-- GPT-5 calls routed through the LiteLLM Responses bridge silently dropped
-  `tool_choice` (including `"required"` for solo agents), and printed LiteLLM's
-  "Provider List" banner twice per call.
-
 ## [2.0.0] - Unreleased
 
 > **⚠️ Scoring change — scores are not comparable with 1.x.** Communication checks,
@@ -83,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Results saved by 1.x cannot be resumed; re-run into a new output path.
 
 ### Added
+- Released benchmark manifests `voice-v2-banking` (`--benchmark banking`:
+  `banking_knowledge`, all 97 tasks) and `voice-v2-entity` (`--benchmark entity`:
+  agent-directed `intake`, all 200 tasks), voice-only in all six languages
+  through the `banking-dates-v1` and `intake` pack extensions. Banking runs use
+  the `alltools` retrieval config. Both score outside the voice-v2 Overall.
+- `tau2 judges suite --processes N --concurrency N --preserve-errors` judges
+  saved runs in parallel (defaults stay 1/1).
+- Crossed Pass³ `--regular-results` reuses a validated seed-42 regular run
+  read-only; the report records source commits and lists infrastructure
+  errors separately.
+- 2.0 leaderboard packages: `tau2 submit prepare <matrix-root> --metadata-file
+  submitter.json --output DIR` writes `DIR/<model>_<org>_<date>/` with
+  `benchmark-submission.json`, `benchmark-diagnostics.json` (voice-v2) and
+  `benchmark-metadata.json` (schema `schema_benchmark_metadata.json`). Packages are
+  listed under the leaderboard manifest key `voice_v2_submissions`
+  (`voice-v2-banking` and `voice-v2-entity` packages under
+  `voice_v2_domain_submissions`). Evidence is uploaded to
+  `s3://sierra-tau-bench-public/submissions/<name>/trajectories/<language>/<domain>/`.
 - `intake` domain (τ-entity): exact entity capture on outbound calls, 200
   tasks, agent-directed (voice) by default with a `scaffolded` ablation that
   also runs in text. See `docs/elicitation.md`.
@@ -99,8 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `refresh-regional-bundle`, …); see `docs/language-authoring.md`.
 - `tau2 judges`: post-hoc judge suite (not part of the reward) and the public
   judge-authoring path. Greeting and transfer turns are excluded from judging.
-- Draft regional localization maps for `banking_knowledge` and `intake` in every
-  non-English pack, authored through `tau2 factory` (not yet in a benchmark manifest).
+- Regional localization maps for `banking_knowledge` and `intake` in every
+  non-English pack, authored through `tau2 factory`.
 - Reviewed language-specific naturalness criteria candidates for the judge catalog
   (drafts; not yet active judges).
 - `tau2.task_subsets`: frozen canonical task frames and immutable subset draws
@@ -109,6 +88,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key-free pytest CI workflow and a `slow` marker for full-bundle tests.
 
 ### Changed
+- Gemini Live starts a new audio item at each `turn_complete` and completes an
+  interaction once, on `IDLE`, so consecutive agent turns are kept separate.
+- Crossed Pass³ uses catalog `voice-v2-rcs-v3` with whole-run seeds 42, 401
+  and 16319 (was `voice-v2-rcs-v2` with 9401/9402/9403). Earlier results keep
+  the `voice-v2-rcs-v2` label.
+- The frozen 2026-10-02 voice-v2 release adapter (`tau2 submit prepare
+  --historical-voice-v2 --judges-root ...`) now writes the same 2.0 package as
+  new runs instead of its own `VoiceV2Submission` format; judge diagnostics
+  record partial and missing verdicts as coverage gaps. New runs still must be
+  fully judged before `prepare` writes a package.
+- Docs for 2.0: a 2.0 section in the README, one page for running the text and
+  voice benchmarks (`docs/running-the-benchmark.md`, replacing
+  `docs/benchmark-runs.md`), a submission guide covering text-v1, voice-v2,
+  voice-v1 and 1.x, a glossary, and `docs/cli-reference.md` generated from
+  `--help` by `scripts/generate_cli_reference.py`.
+- `tau2 judges suite`/`summarize` and released-benchmark `tau2 run` (dry-run plan
+  and final score summary) print compact tables; `--json` restores the full JSON.
+  `tau2 judges ... --output FILE` saves the full export.
+- CLI startup no longer logs the registry contents, data directory or noise-bank
+  counts, so `--help` prints only help.
 - **Every run resolves a language pack.** No `--language` is identical to
   `--language en`; English prompts (personas, agent language clause, persona
   gender line) now come from the English pack.
@@ -156,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regional caller emails use the language's reviewed mailbox domain.
 - Default Gemini model is `gemini-3.8-live-extended-thinking` (was
   `gemini-3.1-flash-live-preview`). With it, Gemini tools are `NON_BLOCKING` and
-  proactive audio stays off. Requires `google-genai>=2.25,<3`.
+  proactive audio stays off. Requires `google-genai>=2.30.1,<3`.
 - xAI voice runs pin `grok-voice-think-fast-2.0` (passed as `?model=`) with
   reasoning effort `high`; 1.x used the endpoint's default model.
 - Qwen defaults are `qwen3.5-omni-plus-realtime` with voice `Tina` (was
@@ -215,6 +214,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mandarin names is complete.
 
 ### Removed
+- `tau2.scripts.leaderboard.voice_v2_submission`, `schema_voice_v2.json` and the
+  `--provider` / `--interaction-facts` flags of `tau2 submit prepare`.
 - `tau2.agent.base.streaming_utils` and its re-exports from `tau2.agent`; the
   transcript helpers (`extract_message_uuid`, `merge_audio_script_gold`,
   `extract_gold_text`, `format_transcript_comparison`, …) live in
@@ -235,6 +236,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `linearize_ticks`, `can_merge_messages`, `append_or_merge_chunk`, …) moved to
   `tau2.utils.transcript.linearization`; `ParticipantTick` and
   `LinearizationStrategy` moved to `tau2.data_model.transcript`.
+
+### Fixed
+- GPT-5 calls routed through the LiteLLM Responses bridge silently dropped
+  `tool_choice` (including `"required"` for solo agents), and printed LiteLLM's
+  "Provider List" banner twice per call.
+- A failed or malformed hallucination review no longer turns a scored voice
+  call into an infrastructure failure. The review status is recorded
+  separately, malformed replies get up to three repair attempts, and a
+  reviewed call is checkpointed if saving its result fails.
+- `tau2 factory` draft prompts state the scenario language and phrase
+  budgets, with bounded repair.
+- The CLI no longer warns when `.env` is absent.
+
+### Security
+- Patched vulnerable Python dependencies.
 
 ## [1.0.1] - 2026-07-15
 
