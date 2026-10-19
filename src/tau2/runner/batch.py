@@ -41,6 +41,7 @@ from tau2.data_model.tasks import Task
 from tau2.data_model.voice import SynthesisConfig, VoiceSettings
 from tau2.data_model.voice_personas import warn_if_non_official_voices
 from tau2.evaluator.evaluator import EvaluationType
+from tau2.evaluator.hallucination_reviewer import failed_hallucination_check
 from tau2.evaluator.reviewer import check_hallucination, format_hallucination_feedback
 from tau2.metrics.agent_metrics import compute_metrics
 from tau2.registry import registry
@@ -50,6 +51,13 @@ from tau2.runner.checkpoint import (
     try_resume,
 )
 from tau2.runner.elicitation import sample_run_complication, user_prompt_task
+from tau2.runner.hallucination_checkpoint import (
+    HallucinationReviewCheckpoint,
+    load_review_checkpoint,
+    review_checkpoint_path,
+    review_config_hash,
+    save_review_checkpoint,
+)
 from tau2.runner.helpers import get_info, make_run_name, select_run_tasks
 from tau2.runner.progress import StatusMonitor, run_with_retry
 from tau2.runner.simulation import run_simulation
@@ -620,32 +628,61 @@ def run_unit(
         )
 
     try:
-        result = run_with_retry(
-            _execute,
-            task=task,
+        review_path = review_checkpoint_path(
+            save_dir if hallucination_retries > 0 else None, task.id, trial, seed
+        )
+        config_hash = review_config_hash(config) if review_path is not None else ""
+        review_checkpoint = load_review_checkpoint(
+            review_path,
+            task_id=task.id,
             trial=trial,
             seed=seed,
-            max_retries=config.max_retries,
-            retry_delay=config.retry_delay,
-            console_display=ctx.console_display,
-            on_retry=(lambda: monitor.task_restarted(task_key)) if monitor else None,
-            shutdown_event=ctx.shutdown_event,
+            config_hash=config_hash,
         )
+        if review_checkpoint is not None:
+            result = review_checkpoint.simulation
+            logger.info(
+                f"Reusing reviewed simulation {result.id} after checkpoint failure "
+                f"(task {task.id}, trial {trial})"
+            )
+        else:
+            result = run_with_retry(
+                _execute,
+                task=task,
+                trial=trial,
+                seed=seed,
+                max_retries=config.max_retries,
+                retry_delay=config.retry_delay,
+                console_display=ctx.console_display,
+                on_retry=(lambda: monitor.task_restarted(task_key))
+                if monitor
+                else None,
+                shutdown_event=ctx.shutdown_event,
+            )
 
         # Hallucination retry: if check detects fabricated info, re-run
         is_full_duplex = result.ticks is not None and len(result.ticks) > 0
-        if hallucination_retries > 0 and is_full_duplex:
+        if hallucination_retries > 0 and is_full_duplex and review_checkpoint is None:
             hallucination_retry_count = 0
+            prompt_task = user_prompt_task(config, task)
             while True:
-                h_check = check_hallucination(
-                    result,
-                    user_prompt_task(config, task),
-                    review_model=config.review_model,
-                )
+                try:
+                    h_check = check_hallucination(
+                        result,
+                        prompt_task,
+                        review_model=config.review_model,
+                    )
+                except Exception as exc:
+                    h_check = failed_hallucination_check(exc, config.review_model)
+                    logger.error(
+                        f"Hallucination review failed for scored simulation "
+                        f"{result.id} (task {task.id}): {exc}"
+                    )
                 result.hallucination_check = h_check
 
                 if (
-                    not h_check.hallucination_found
+                    h_check.review_status == "failed"
+                    or not h_check.hallucination_found
                     or hallucination_retry_count >= hallucination_retries
                 ):
                     break
@@ -727,10 +764,45 @@ def run_unit(
         if result.agent_voice or result.agent_voice_gender:
             result.agent_voice_catalog = VOICE_GENDER_CATALOG_REVISION
 
-        # A failed reviewer must not leave an unreviewed success checkpoint.
-        # Raw attempt artifacts are already retained by the simulation runner.
+        # A failed reviewer is a recorded, unavailable verdict, not a failed
+        # scored call. Retain its raw replies and simulation if a worker dies
+        # before the controller receives the result.
+        if (
+            review_path is not None
+            and review_checkpoint is None
+            and result.hallucination_check is not None
+            and result.hallucination_check.review_status == "failed"
+        ):
+            review_checkpoint = HallucinationReviewCheckpoint(
+                task_id=task.id,
+                trial=trial,
+                seed=seed,
+                config_hash=config_hash,
+                simulation=result,
+            )
+            save_review_checkpoint(review_path, review_checkpoint)
+
         if ctx.save_fn:
-            ctx.save_fn(result)
+            try:
+                ctx.save_fn(result)
+            except Exception:
+                if review_path is not None and review_checkpoint is None:
+                    review_checkpoint = HallucinationReviewCheckpoint(
+                        task_id=task.id,
+                        trial=trial,
+                        seed=seed,
+                        config_hash=config_hash,
+                        simulation=result,
+                    )
+                    save_review_checkpoint(review_path, review_checkpoint)
+                raise
+            if (
+                review_path is not None
+                and review_checkpoint is not None
+                and result.hallucination_check is not None
+                and result.hallucination_check.review_status == "completed"
+            ):
+                review_path.unlink(missing_ok=True)
 
         # Mark the final sim as the one used in results
         if save_dir is not None:

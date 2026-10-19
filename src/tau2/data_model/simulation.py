@@ -602,18 +602,37 @@ class HallucinationCheckError(BaseModel):
     )
 
 
+class HallucinationReviewFailure(BaseModel):
+    """Evidence retained when the post-call reviewer cannot return a verdict."""
+
+    error_type: str = Field(description="Class of the reviewer failure.")
+    message: str = Field(description="Reviewer error message.")
+    raw_responses: list[str] = Field(
+        description="Invalid raw LLM replies, when a response was received.",
+        default_factory=list,
+    )
+
+
 class HallucinationCheck(BaseModel):
     """
     Result of checking a conversation for user simulator hallucinations.
     """
 
     reasoning: str = Field(
-        description="Step-by-step reasoning about the conversation before the decision.",
+        description="Concise evidence summary for the hallucination verdict.",
         default="",
     )
-    hallucination_found: bool = Field(
-        description="Whether any hallucinations were detected.",
+    hallucination_found: Optional[bool] = Field(
+        description="Whether hallucinations were detected; null when review failed.",
         default=False,
+    )
+    review_status: Literal["completed", "failed"] = Field(
+        description="Whether the reviewer produced a valid verdict.",
+        default="completed",
+    )
+    review_failure: Optional[HallucinationReviewFailure] = Field(
+        description="Failure evidence when the reviewer could not return a verdict.",
+        default=None,
     )
     errors: list[HallucinationCheckError] = Field(
         description="List of hallucinations found.",
@@ -627,6 +646,27 @@ class HallucinationCheck(BaseModel):
         description="The cost of the hallucination check.",
         default=None,
     )
+    review_model: Optional[str] = Field(
+        description="Exact model used for this hallucination review.", default=None
+    )
+    prompt_version: Optional[str] = Field(
+        description="Version of the hallucination review prompt.", default=None
+    )
+    response_validation_retries: Optional[int] = Field(
+        description="Maximum structured-response repair attempts for the review.",
+        default=None,
+    )
+
+    @model_validator(mode="after")
+    def _verdict_matches_status(self) -> "HallucinationCheck":
+        if self.review_status == "failed":
+            if self.hallucination_found is not None or self.review_failure is None:
+                raise ValueError(
+                    "Failed review requires no verdict and failure evidence"
+                )
+        elif self.hallucination_found is None or self.review_failure is not None:
+            raise ValueError("Completed review requires a verdict without failure")
+        return self
 
 
 class AuthenticationClassification(BaseModel):

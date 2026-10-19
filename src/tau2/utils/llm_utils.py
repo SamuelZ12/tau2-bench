@@ -16,6 +16,7 @@ from litellm import completion, completion_cost
 from litellm.caching.caching import Cache
 from litellm.main import ModelResponse, Usage
 from loguru import logger
+from pydantic import BaseModel, ValidationError
 
 from tau2.config import (
     DEFAULT_LLM_CACHE_TYPE,
@@ -503,7 +504,88 @@ def _apply_anthropic_adaptive_thinking(model: str, kwargs: dict[str, Any]) -> No
         kwargs.setdefault("output_config", {"effort": effort})
 
 
+class LLMResponseValidationError(ValueError):
+    """A model reply remained invalid after response validation retries."""
+
+    def __init__(self, model: str, raw_responses: list[str], cause: Exception):
+        self.model = model
+        self.raw_responses = raw_responses
+        super().__init__(f"Invalid {model} response: {cause}")
+
+
 def generate(
+    model: str,
+    messages: list[Message],
+    tools: Optional[list[Tool]] = None,
+    tool_choice: Optional[str] = None,
+    call_name: Optional[str] = None,
+    response_model: type[BaseModel] | None = None,
+    response_validation_retries: int = 0,
+    **kwargs: Any,
+) -> UserMessage | AssistantMessage:
+    """Generate a reply, retrying invalid structured responses in this boundary.
+
+    The response model validates an extracted JSON object. On a validation
+    failure, the model sees its prior reply and one short correction request.
+    All invalid replies are retained on the raised exception for diagnosis.
+    """
+    if response_validation_retries < 0:
+        raise ValueError("response_validation_retries must be nonnegative")
+    if response_validation_retries and response_model is None:
+        raise ValueError("response_validation_retries requires response_model")
+
+    attempt_messages = list(messages)
+    raw_responses: list[str] = []
+    total_cost = 0.0
+    has_cost = False
+    for attempt in range(response_validation_retries + 1):
+        reply = _generate_once(
+            model,
+            attempt_messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            call_name=call_name,
+            **kwargs,
+        )
+        if response_model is None:
+            return reply
+        if reply.cost is not None:
+            total_cost += reply.cost
+            has_cost = True
+        raw_responses.append(reply.content or "")
+        try:
+            response_model.model_validate_json(
+                extract_json_from_llm_response(reply.content or "")
+            )
+            if has_cost:
+                reply.cost = total_cost
+            return reply
+        except (ValidationError, ValueError) as exc:
+            logger.warning(
+                f"Invalid structured response for {call_name or model} "
+                f"(attempt {attempt + 1}/{response_validation_retries + 1}): {exc}"
+            )
+            if attempt == response_validation_retries:
+                raise LLMResponseValidationError(
+                    response_model.__name__, raw_responses, exc
+                ) from exc
+            attempt_messages.extend(
+                [
+                    reply,
+                    UserMessage(
+                        role="user",
+                        content=(
+                            "Your previous reply was invalid JSON or did not match "
+                            "the requested schema. Return only a corrected JSON "
+                            "object. Escape quotation marks and newlines in strings."
+                        ),
+                    ),
+                ]
+            )
+    raise AssertionError("response validation loop did not return or raise")
+
+
+def _generate_once(
     model: str,
     messages: list[Message],
     tools: Optional[list[Tool]] = None,
