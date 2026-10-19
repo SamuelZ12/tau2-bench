@@ -85,3 +85,20 @@ def test_scoring_authenticates_extension_cells(preset):
         _authoritative_language(
             cell.language, cell.domain, cell.binding_revision, "voice"
         )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"retrieval_config": "bm25"}, {"retrieval_config_kwargs": {"top_k": 3}}],
+)
+def test_banking_rejects_custom_retrieval(tmp_path, overrides):
+    with pytest.raises(ValueError, match="retrieval config"):
+        resolve_benchmark(
+            BenchmarkRequest(
+                preset="banking",
+                output=tmp_path / "banking",
+                template=VoiceRunConfig(
+                    audio_native_config=AudioNativeConfig(), **overrides
+                ),
+            )
+        )

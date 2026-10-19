@@ -9,6 +9,7 @@ from pydantic import Discriminator, Field, Tag
 
 from tau2.config import (
     DEFAULT_AUDIO_NATIVE_MODELS,
+    DEFAULT_BANKING_RETRIEVAL_CONFIG,
     DEFAULT_BENCHMARK_USER_ARGS,
     DEFAULT_BENCHMARK_USER_MODEL,
     DEFAULT_LANGUAGE,
@@ -302,6 +303,14 @@ def resolve_configs(
             raise ValueError(
                 f"Released {cell.domain} cells use the default elicitation strategy; "
                 "use --benchmark none for other strategies"
+            )
+        if cell.domain == "banking_knowledge" and (
+            config.retrieval_config != DEFAULT_BANKING_RETRIEVAL_CONFIG
+            or config.retrieval_config_kwargs
+        ):
+            raise ValueError(
+                f"Released banking cells use the {DEFAULT_BANKING_RETRIEVAL_CONFIG} "
+                "retrieval config; use --benchmark none for other retrieval settings"
             )
         common = encode_conditions(config)
         condition = hashlib.sha256(
