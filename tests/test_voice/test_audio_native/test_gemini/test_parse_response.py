@@ -17,6 +17,7 @@ import pytest
 
 from tau2.voice.audio_native.gemini.events import (
     GeminiAudioDeltaEvent,
+    GeminiAudioDoneEvent,
     GeminiFunctionCallDoneEvent,
     GeminiGoAwayEvent,
     GeminiInputTranscriptionEvent,
@@ -148,6 +149,99 @@ def test_sdk_receive_waits_for_extended_thinking_idle():
     assert len(asyncio.run(collect())) == 2
 
 
+def test_receive_loop_rotates_audio_item_at_intermediate_turn():
+    """Later speech gets its own item before the interaction becomes idle."""
+    from google.genai import types
+
+    async def check():
+        provider = _make_provider()
+        provider.model = "gemini-3.8-live-extended-thinking"
+        provider._stop_receive = False
+        provider._event_queue = asyncio.Queue()
+        provider._generate_item_id = Mock(return_value="test_item_2")
+
+        async def responses():
+            yield _empty_response(data=b"first utterance")
+            yield _empty_response(
+                server_content=_make_server_content(
+                    turn_complete=True,
+                    interaction_status=types.InteractionStatus.IN_PROGRESS,
+                )
+            )
+            yield _empty_response(data=b"second utterance")
+            provider._stop_receive = True
+
+        provider._session = Mock()
+        provider._session.receive.return_value = responses()
+
+        await provider._receive_loop_coro()
+        events = []
+        while not provider._event_queue.empty():
+            events.append(provider._event_queue.get_nowait())
+
+        audio_items = [
+            event.item_id
+            for event in events
+            if isinstance(event, GeminiAudioDeltaEvent)
+        ]
+        completed_items = [
+            event.item_id for event in events if isinstance(event, GeminiAudioDoneEvent)
+        ]
+        assert audio_items == ["test_item_1", "test_item_2"]
+        assert completed_items == ["test_item_1"]
+        assert (
+            len(
+                [
+                    event
+                    for event in events
+                    if isinstance(event, GeminiTurnCompleteEvent)
+                ]
+            )
+            == 1
+        )
+
+    asyncio.run(check())
+
+
+def test_receive_loop_does_not_duplicate_idle_completion_without_turn_complete():
+    """An IDLE-only response completes the interaction once at iterator end."""
+    from google.genai import types
+
+    async def check():
+        provider = _make_provider()
+        provider.model = "gemini-3.8-live-extended-thinking"
+        provider._stop_receive = False
+        provider._event_queue = asyncio.Queue()
+        provider._reconnect_at_turn_boundary = True
+        provider._reconnect_deadline = None
+        provider.session_id = "test-session"
+        provider._generate_item_id = Mock(return_value="test_item_2")
+
+        async def responses():
+            yield _empty_response(data=b"spoken answer")
+            yield _empty_response(
+                server_content=_make_server_content(
+                    turn_complete=False,
+                    interaction_status=types.InteractionStatus.IDLE,
+                )
+            )
+
+        provider._session = Mock()
+        provider._session.receive.return_value = responses()
+
+        await provider._receive_loop_coro()
+        events = []
+        while not provider._event_queue.empty():
+            events.append(provider._event_queue.get_nowait())
+
+        assert sum(isinstance(e, GeminiTurnCompleteEvent) for e in events) == 1
+        assert [e.item_id for e in events if isinstance(e, GeminiAudioDoneEvent)] == [
+            "test_item_1"
+        ]
+
+    asyncio.run(check())
+
+
 # =============================================================================
 # Correct parsing paths
 # =============================================================================
@@ -241,6 +335,20 @@ class TestCorrectParsingPaths:
         events = provider._parse_response(_empty_response(server_content=sc))
 
         assert events == []
+
+    def test_extended_thinking_idle_completes_interaction(self):
+        from google.genai import types
+
+        provider = _make_provider()
+        provider.model = "gemini-3.8-live-extended-thinking"
+        sc = _make_server_content(
+            turn_complete=True,
+            interaction_status=types.InteractionStatus.IDLE,
+        )
+
+        events = provider._parse_response(_empty_response(server_content=sc))
+
+        assert len([e for e in events if isinstance(e, GeminiTurnCompleteEvent)]) == 1
 
     def test_extended_thinking_status_only_is_not_unknown(self):
         provider = _make_provider()

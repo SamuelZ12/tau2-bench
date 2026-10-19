@@ -1,13 +1,25 @@
 """Offline suite orchestration cannot mix contracts or silently call judges."""
 
 import json
+import queue
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from tau2.data_model.judges import JudgeInput, Measure, MeasureVerdict, PlanAction
+from tau2.judges import suite
 from tau2.judges.catalog import load_catalog
-from tau2.judges.suite import execute_suite, plan_suite, read_verdicts
+from tau2.judges.suite import (
+    JudgeExecutionConfig,
+    JudgeJob,
+    JudgeShard,
+    JudgeWorkerMessage,
+    execute_suite,
+    plan_suite,
+    read_verdicts,
+)
 
 
 def inputs():
@@ -87,6 +99,76 @@ def test_resume_reuses_matching_contract_and_all_trials(tmp_path):
         inputs(), load_catalog(), [], only=[Measure.NATURALNESS], trials=[1]
     )
     assert [item.input.trial for item in selected.items] == [1]
+
+
+def test_preserve_errors_fills_gaps_without_retrying_recorded_failure(tmp_path):
+    path = tmp_path / "verdicts.json"
+
+    def fail(*_args):
+        raise RuntimeError("recorded failure")
+
+    execute_suite(
+        inputs()[:1], load_catalog(), path, only=[Measure.NATURALNESS], backend=fail
+    )
+    before = path.read_bytes()
+    execute_suite(
+        inputs()[:1],
+        load_catalog(),
+        path,
+        only=[Measure.NATURALNESS],
+        retry_errors=False,
+        backend=lambda *_args: pytest.fail("recorded error was retried"),
+    )
+    assert path.read_bytes() == before
+
+
+def test_judge_worker_bounds_in_flight_calls(monkeypatch, tmp_path):
+    selected = [
+        inputs()[0].model_copy(update={"simulation_id": f"sim-{index}"})
+        for index in range(6)
+    ]
+    catalog = load_catalog()
+    plan = plan_suite(selected, catalog, [], only=[Measure.NATURALNESS])
+    lock = threading.Lock()
+    active = peak = 0
+
+    class FakeSavedRun:
+        def __init__(self, results):
+            self.results_path = results
+            self.metadata = self.tasks = self.language = self.run_id = None
+
+        def load(self, _item):
+            return None
+
+    class FakeJudge:
+        def evaluate(self, _evidence, _measure):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return passing_backend(None, None, None)
+
+    monkeypatch.setattr(suite, "SavedRun", FakeSavedRun)
+    monkeypatch.setattr(suite.Results, "_detect_format", lambda _path: "dir")
+    monkeypatch.setattr(suite, "create_judge", lambda _contract: FakeJudge())
+    output = queue.Queue()
+    shard = JudgeShard(
+        results=tmp_path,
+        catalog=catalog,
+        jobs=[JudgeJob(item=item) for item in plan.items],
+        concurrency=3,
+    )
+    suite._run_judge_shard(shard.model_dump_json(), output)
+    messages = [
+        JudgeWorkerMessage.model_validate_json(output.get_nowait())
+        for _ in range(len(plan.items))
+    ]
+    assert all(message.verdict is not None for message in messages)
+    assert peak == 3
+    assert JudgeExecutionConfig(processes=8, concurrency=10).processes == 8
 
 
 def test_saved_naturalness_v16_loads_but_requires_rejudging(tmp_path):

@@ -15,7 +15,7 @@ from tau2.data_model.judges import (
     SuitePlan,
     SuiteResult,
 )
-from tau2.judges.suite import judge_saved_run
+from tau2.judges.suite import JudgeExecutionConfig, judge_saved_run
 
 
 class DiagnosticSummary(ContractModel):
@@ -217,12 +217,19 @@ def build_export(
     trials: list[int] | None = None,
     force: bool = False,
     execute: bool = False,
+    execution: JudgeExecutionConfig | None = None,
 ) -> DiagnosticExport | MatrixDiagnosticExport:
     """Export an ordinary run or selected matrix using the same typed workflow."""
     if not (results / "benchmark-frame.json").is_file():
         return export_suite(
             judge_saved_run(
-                results, catalog, only=only, trials=trials, force=force, execute=execute
+                results,
+                catalog,
+                only=only,
+                trials=trials,
+                force=force,
+                execute=execute,
+                execution=execution,
             )
         )
     from tau2.metrics.benchmark import load_saved_benchmark
@@ -240,6 +247,7 @@ def build_export(
                     trials=trials,
                     force=force,
                     execute=execute,
+                    execution=execution,
                 )
             )
         cells.append(CellDiagnosticExport(cell=saved.cell, diagnostics=diagnostics))

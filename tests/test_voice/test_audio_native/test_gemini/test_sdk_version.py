@@ -10,18 +10,20 @@ from tau2.voice.audio_native.gemini.provider import require_extended_thinking_sd
 MODEL = "gemini-3.8-live-extended-thinking"
 
 
-@pytest.mark.parametrize("version", ["1.63.0", "2.25.0", "2.25.1", "2.26.0rc1"])
+@pytest.mark.parametrize(
+    "version", ["1.63.0", "2.25.0", "2.26.0", "2.30.0", "2.30.1rc1"]
+)
 def test_extended_thinking_rejects_old_or_unpinned_sdk(monkeypatch, version):
     monkeypatch.setattr(genai, "__version__", version)
     config = VoiceRunConfig(
         domain="intake",
         audio_native_config=AudioNativeConfig(provider="gemini", model=MODEL),
     )
-    with pytest.raises(ValueError, match="google-genai>=2.26.0"):
+    with pytest.raises(ValueError, match="google-genai>=2.30.1"):
         config.validate()
 
 
-@pytest.mark.parametrize("version", ["2.26.0", "2.31.0"])
+@pytest.mark.parametrize("version", ["2.30.1", "2.31.0"])
 def test_extended_thinking_accepts_new_sdk(monkeypatch, version):
     monkeypatch.setattr(genai, "__version__", version)
     require_extended_thinking_sdk(MODEL)

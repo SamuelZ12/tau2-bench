@@ -1,12 +1,18 @@
 """Saved-run judging: load evidence, select implementations, plan and checkpoint."""
 
 import json
+import multiprocessing
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from queue import Empty
+from typing import Annotated
 
-from pydantic import ValidationError
+from loguru import logger
+from pydantic import BaseModel, Field, ValidationError
 
+from tau2.config import DEFAULT_JUDGE_CONCURRENCY, DEFAULT_JUDGE_PROCESSES
 from tau2.data_model.judges import (
     DiagnosticId,
     ImplementationFamily,
@@ -21,8 +27,46 @@ from tau2.data_model.judges import (
     SuiteResult,
     VerdictIdentity,
 )
+from tau2.data_model.simulation import Results
 from tau2.judges.base import BaseJudge
 from tau2.judges.run_evidence import SavedRun, progress_path
+
+
+class JudgeExecutionConfig(BaseModel):
+    """Bounded process and thread concurrency for saved-run judging."""
+
+    processes: Annotated[
+        int, Field(ge=1, description="Independent judge worker processes.")
+    ] = DEFAULT_JUDGE_PROCESSES
+    concurrency: Annotated[
+        int, Field(ge=1, description="Judge calls in flight per worker process.")
+    ] = DEFAULT_JUDGE_CONCURRENCY
+    retry_errors: Annotated[
+        bool, Field(description="Retry matching stored judge errors and partials.")
+    ] = True
+
+
+class JudgeJob(BaseModel):
+    """One planned verdict and its resumable previous outcome."""
+
+    item: PlannedVerdict
+    previous: StoredVerdict | None = None
+
+
+class JudgeShard(BaseModel):
+    """Typed, serialized boundary for one judge worker process."""
+
+    results: Path
+    catalog: JudgeCatalog
+    jobs: list[JudgeJob]
+    concurrency: int = Field(ge=1)
+
+
+class JudgeWorkerMessage(BaseModel):
+    """A completed verdict or a process-level failure sent to the controller."""
+
+    verdict: StoredVerdict | None = None
+    error: str | None = None
 
 
 def _key(item: JudgeInput, measure: DiagnosticId) -> tuple[str, str, int, str]:
@@ -173,6 +217,76 @@ def _save_verdicts(path: Path, rows: list[StoredVerdict]) -> None:
     temporary.replace(path)
 
 
+def _evaluate_job(
+    job: JudgeJob,
+    contracts: dict[str, JudgeContract],
+    backend: Callable[[JudgeInput, JudgeContract, str], MeasureVerdict],
+    resume_backend: Callable[
+        [JudgeInput, JudgeContract, str, MeasureVerdict], MeasureVerdict
+    ]
+    | None,
+) -> StoredVerdict:
+    """Evaluate one planned measure while preserving any successful prior units."""
+    item, previous = job.item, job.previous
+    assert item.identity is not None
+    partial = (
+        previous.verdict
+        if (
+            item.action == PlanAction.RETRY_ERROR
+            and previous is not None
+            and previous.identity == item.identity
+            and previous.verdict is not None
+        )
+        else None
+    )
+    if partial is not None and resume_backend is None:
+        raise ValueError(
+            "Partial verdicts require a resume backend to preserve successful units"
+        )
+    try:
+        if partial is not None:
+            assert resume_backend is not None
+            response = resume_backend(
+                item.input, contracts[item.identity.contract_id], item.measure, partial
+            )
+            if not isinstance(response, MeasureVerdict):
+                raise TypeError("Judge must return a typed MeasureVerdict")
+            before_ids = {u.unit_id for u in [*partial.units, *partial.unit_errors]}
+            after_ids = {u.unit_id for u in [*response.units, *response.unit_errors]}
+            if before_ids != after_ids:
+                raise ValueError("Partial retry changed diagnostic unit coverage")
+            retained = {u.unit_id: u for u in response.units}
+            if any(retained.get(u.unit_id) != u for u in partial.units):
+                raise ValueError("Partial retry changed or dropped a successful unit")
+        else:
+            response = backend(
+                item.input, contracts[item.identity.contract_id], item.measure
+            )
+        if not isinstance(response, MeasureVerdict):
+            raise TypeError("Judge must return a typed MeasureVerdict")
+        return StoredVerdict(identity=item.identity, verdict=response)
+    except Exception as exc:
+        if partial is not None:
+            return StoredVerdict(
+                identity=item.identity,
+                verdict=partial.model_copy(
+                    update={
+                        "unit_errors": [
+                            error.model_copy(
+                                update={
+                                    "error": f"Retry failed: {type(exc).__name__}: {exc}"
+                                }
+                            )
+                            for error in partial.unit_errors
+                        ]
+                    }
+                ),
+            )
+        return StoredVerdict(
+            identity=item.identity, error=f"{type(exc).__name__}: {exc}"
+        )
+
+
 def execute_suite(
     inputs: list[JudgeInput],
     catalog: JudgeCatalog,
@@ -182,6 +296,7 @@ def execute_suite(
     trials: list[int] | None = None,
     force: bool = False,
     dry_run: bool = False,
+    retry_errors: bool = True,
     backend: Callable[[JudgeInput, JudgeContract, str], MeasureVerdict] | None = None,
     resume_backend: Callable[
         [JudgeInput, JudgeContract, str, MeasureVerdict], MeasureVerdict
@@ -201,13 +316,8 @@ def execute_suite(
     work = [
         item
         for item in plan.items
-        if item.action
-        in {
-            PlanAction.MISSING,
-            PlanAction.STALE,
-            PlanAction.FORCE,
-            PlanAction.RETRY_ERROR,
-        }
+        if item.action in {PlanAction.MISSING, PlanAction.STALE, PlanAction.FORCE}
+        or (retry_errors and item.action == PlanAction.RETRY_ERROR)
     ]
     if work and backend is None:
         raise ValueError(
@@ -216,76 +326,166 @@ def execute_suite(
     existing = {_key(row.identity.input, row.identity.measure): row for row in stored}
     contracts = {contract.contract_id: contract for contract in catalog.contracts}
     for item in work:
-        assert item.identity is not None and backend is not None
-        previous = existing.get(_key(item.input, item.measure))
-        partial = (
-            previous.verdict
-            if (
-                item.action == PlanAction.RETRY_ERROR
-                and previous is not None
-                and previous.identity == item.identity
-                and previous.verdict is not None
-            )
-            else None
+        assert backend is not None
+        saved = _evaluate_job(
+            JudgeJob(item=item, previous=existing.get(_key(item.input, item.measure))),
+            contracts,
+            backend,
+            resume_backend,
         )
-        if partial is not None and resume_backend is None:
-            raise ValueError(
-                "Partial verdicts require a resume backend to preserve successful units"
-            )
-        try:
-            if partial is not None:
-                response = resume_backend(
-                    item.input,
-                    contracts[item.identity.contract_id],
-                    item.measure,
-                    partial,
-                )
-                if not isinstance(response, MeasureVerdict):
-                    raise TypeError("Judge must return a typed MeasureVerdict")
-                before_ids = {u.unit_id for u in [*partial.units, *partial.unit_errors]}
-                after_ids = {
-                    u.unit_id for u in [*response.units, *response.unit_errors]
-                }
-                if before_ids != after_ids:
-                    raise ValueError("Partial retry changed diagnostic unit coverage")
-                retained = {u.unit_id: u for u in response.units}
-                if any(retained.get(u.unit_id) != u for u in partial.units):
-                    raise ValueError(
-                        "Partial retry changed or dropped a successful unit"
-                    )
-            else:
-                response = backend(
-                    item.input, contracts[item.identity.contract_id], item.measure
-                )
-            if not isinstance(response, MeasureVerdict):
-                raise TypeError("Judge must return a typed MeasureVerdict")
-            verdict = response
-            saved = StoredVerdict(identity=item.identity, verdict=verdict)
-        except Exception as exc:
-            if partial is not None:
-                saved = StoredVerdict(
-                    identity=item.identity,
-                    verdict=partial.model_copy(
-                        update={
-                            "unit_errors": [
-                                error.model_copy(
-                                    update={
-                                        "error": (
-                                            f"Retry failed: {type(exc).__name__}: {exc}"
-                                        )
-                                    }
-                                )
-                                for error in partial.unit_errors
-                            ]
-                        }
-                    ),
-                )
-            else:
-                saved = StoredVerdict(
-                    identity=item.identity, error=f"{type(exc).__name__}: {exc}"
-                )
         existing[_key(item.input, item.measure)] = saved
         _save_verdicts(path, list(existing.values()))
+    return plan
+
+
+def _run_judge_shard(payload: str, result_queue: multiprocessing.Queue) -> None:
+    """Evaluate one disjoint shard; only the parent writes the diagnostics file."""
+    try:
+        shard = JudgeShard.model_validate_json(payload)
+        saved = SavedRun(shard.results)
+        # Resolve shared lazy metadata before threads start. Monolithic runs also
+        # need their simulation map built once outside the thread pool.
+        _ = saved.metadata, saved.tasks, saved.language, saved.run_id
+        if Results._detect_format(saved.results_path) != "dir":
+            saved._monolithic = {
+                sim.id: sim for sim in Results.iter_simulations(saved.results_path)
+            }
+        contracts = {
+            contract.contract_id: contract for contract in shard.catalog.contracts
+        }
+
+        def evaluate(
+            item: JudgeInput,
+            contract: JudgeContract,
+            measure: str,
+            previous: MeasureVerdict | None = None,
+        ) -> MeasureVerdict:
+            judge = create_judge(contract)
+            evidence = saved.load(item)
+            if previous is not None:
+                return judge.resume(evidence, measure, previous)
+            return judge.evaluate(evidence, measure)
+
+        with ThreadPoolExecutor(max_workers=shard.concurrency) as executor:
+            futures = [
+                executor.submit(_evaluate_job, job, contracts, evaluate, evaluate)
+                for job in shard.jobs
+            ]
+            for future in as_completed(futures):
+                result_queue.put(
+                    JudgeWorkerMessage(verdict=future.result()).model_dump_json()
+                )
+    except BaseException as exc:
+        result_queue.put(
+            JudgeWorkerMessage(error=f"{type(exc).__name__}: {exc}").model_dump_json()
+        )
+        raise
+
+
+def execute_suite_parallel(
+    inputs: list[JudgeInput],
+    catalog: JudgeCatalog,
+    path: Path,
+    results: Path,
+    execution: JudgeExecutionConfig,
+    *,
+    only: list[DiagnosticId] | None = None,
+    trials: list[int] | None = None,
+    force: bool = False,
+) -> SuitePlan:
+    """Run disjoint judge jobs with 1 controller and bounded process/thread workers.
+
+    Workers read immutable saved results. The controller alone checkpoints each
+    completed verdict atomically, preserving previously successful diagnostics.
+    """
+    stored = read_verdicts(path)
+    plan = plan_suite(inputs, catalog, stored, only=only, trials=trials, force=force)
+    existing = {_key(row.identity.input, row.identity.measure): row for row in stored}
+    work = [
+        JudgeJob(item=item, previous=existing.get(_key(item.input, item.measure)))
+        for item in plan.items
+        if item.action in {PlanAction.MISSING, PlanAction.STALE, PlanAction.FORCE}
+        or (execution.retry_errors and item.action == PlanAction.RETRY_ERROR)
+    ]
+    if not work:
+        return plan
+    workers = min(execution.processes, len(work))
+    shards: list[list[JudgeJob]] = [[] for _ in range(workers)]
+    for index, job in enumerate(work):
+        shards[index % workers].append(job)
+    logger.info(
+        "Judging {} verdicts with {} processes x {} calls in flight",
+        len(work),
+        workers,
+        execution.concurrency,
+    )
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=workers * execution.concurrency * 2)
+    processes = [
+        context.Process(
+            target=_run_judge_shard,
+            args=(
+                JudgeShard(
+                    results=results,
+                    catalog=catalog,
+                    jobs=jobs,
+                    concurrency=execution.concurrency,
+                ).model_dump_json(),
+                result_queue,
+            ),
+        )
+        for jobs in shards
+    ]
+    expected = {
+        _key(job.item.input, job.item.measure): job.item.identity for job in work
+    }
+    completed: set[tuple[str, str, int, str]] = set()
+    try:
+        for process in processes:
+            process.start()
+        while len(completed) < len(work):
+            try:
+                message = JudgeWorkerMessage.model_validate_json(
+                    result_queue.get(timeout=10)
+                )
+            except Empty:
+                if any(p.exitcode not in (None, 0) for p in processes):
+                    raise RuntimeError(
+                        "A judge worker exited before completing its shard"
+                    )
+                if not any(p.is_alive() for p in processes):
+                    raise RuntimeError(
+                        "Judge workers stopped before all verdicts arrived"
+                    )
+                continue
+            if message.error is not None:
+                raise RuntimeError(f"Judge worker failed: {message.error}")
+            if message.verdict is None:
+                raise ValueError("Judge worker returned neither a verdict nor an error")
+            verdict = message.verdict
+            key = _key(verdict.identity.input, verdict.identity.measure)
+            if (
+                key in completed
+                or key not in expected
+                or verdict.identity != expected[key]
+            ):
+                raise ValueError(
+                    "Judge worker returned an unexpected or duplicate verdict"
+                )
+            completed.add(key)
+            existing[key] = verdict
+            _save_verdicts(path, list(existing.values()))
+        for process in processes:
+            process.join(timeout=10)
+            if process.exitcode != 0:
+                raise RuntimeError("A judge worker did not exit cleanly")
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            if process.pid is not None:
+                process.join(timeout=10)
+        result_queue.close()
     return plan
 
 
@@ -318,11 +518,24 @@ def judge_saved_run(
     force: bool = False,
     execute: bool = False,
     output: Path | None = None,
+    execution: JudgeExecutionConfig | None = None,
 ) -> SuiteResult:
     """Plan or execute one saved run, with explicit separate candidate storage."""
     saved = SavedRun(results)
     path = output if output is not None else progress_path(saved.results_path)
-    if execute:
+    execution = execution or JudgeExecutionConfig()
+    if execute and (execution.processes > 1 or execution.concurrency > 1):
+        execute_suite_parallel(
+            saved.inputs,
+            catalog,
+            path,
+            saved.results_path,
+            execution,
+            only=only,
+            trials=trials,
+            force=force,
+        )
+    elif execute:
         judges: dict[str, BaseJudge] = {}
 
         def evaluate(
@@ -346,6 +559,7 @@ def judge_saved_run(
             only=only,
             trials=trials,
             force=force,
+            retry_errors=execution.retry_errors,
             backend=evaluate,
             resume_backend=evaluate,
         )
