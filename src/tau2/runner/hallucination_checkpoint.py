@@ -6,6 +6,7 @@ import os
 import uuid
 from pathlib import Path
 
+from loguru import logger
 from pydantic import BaseModel
 
 from tau2.data_model.simulation import RunConfig, SimulationRun
@@ -51,7 +52,10 @@ def load_review_checkpoint(
     seed: int,
     config_hash: str,
 ) -> HallucinationReviewCheckpoint | None:
-    """Load only the checkpoint for this exact queued unit and configuration."""
+    """Load only the checkpoint for this exact queued unit and configuration.
+
+    A checkpoint for any other unit or configuration is discarded.
+    """
     if path is None or not path.exists():
         return None
     checkpoint = HallucinationReviewCheckpoint.model_validate_json(path.read_text())
@@ -63,7 +67,11 @@ def load_review_checkpoint(
         or checkpoint.simulation.task_id != task_id
         or checkpoint.simulation.trial != trial
     ):
-        raise ValueError(f"Hallucination review checkpoint does not match {task_id}")
+        # A leftover file from another configuration or unit is stale, not
+        # recoverable: drop it and run the unit afresh.
+        logger.warning(f"Discarding stale hallucination review checkpoint {path}")
+        path.unlink(missing_ok=True)
+        return None
     return checkpoint
 
 

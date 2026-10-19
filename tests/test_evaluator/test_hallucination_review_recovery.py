@@ -18,9 +18,11 @@ from tau2.evaluator.evaluator import EvaluationType
 from tau2.evaluator.hallucination_reviewer import HallucinationReviewResponse
 from tau2.runner import batch
 from tau2.runner.hallucination_checkpoint import (
+    HallucinationReviewCheckpoint,
     load_review_checkpoint,
     review_checkpoint_path,
     review_config_hash,
+    save_review_checkpoint,
 )
 from tau2.utils import llm_utils
 from tau2.utils.llm_utils import LLMResponseValidationError
@@ -245,4 +247,48 @@ def test_result_checkpoint_failure_reuses_reviewed_simulation(
     assert len(sim_calls) == 1
     assert len(review_calls) == 1
     assert len(save_calls) == 2
+    assert not path.exists()
+
+
+def test_delivered_failed_review_leaves_no_checkpoint(monkeypatch, tmp_path, base_task):
+    ctx = _context(tmp_path, base_task.id)
+    sim_calls = []
+    saved = []
+
+    def fake_simulate(*_args, **_kwargs):
+        sim_calls.append(1)
+        return _simulation(base_task.id, f"call-{len(sim_calls)}")
+
+    def fake_review(*_args, **_kwargs):
+        raise ConnectionError("reviewer unavailable")
+
+    ctx.save_fn = saved.append
+    monkeypatch.setattr(batch, "run_single_task", fake_simulate)
+    monkeypatch.setattr(batch, "check_hallucination", fake_review)
+    assert batch.run_unit(ctx, base_task, 0, 42).id == "call-1"
+    assert not review_checkpoint_path(tmp_path, base_task.id, 0, 42).exists()
+
+    # A later run of the same unit simulates again rather than replaying.
+    assert batch.run_unit(ctx, base_task, 0, 42).id == "call-2"
+    assert [r.id for r in saved] == ["call-1", "call-2"]
+
+
+def test_mismatched_checkpoint_is_discarded(tmp_path, base_task):
+    path = review_checkpoint_path(tmp_path, base_task.id, 0, 42)
+    save_review_checkpoint(
+        path,
+        HallucinationReviewCheckpoint(
+            task_id=base_task.id,
+            trial=0,
+            seed=42,
+            config_hash="old-config",
+            simulation=_simulation(base_task.id, "stale-call"),
+        ),
+    )
+    assert (
+        load_review_checkpoint(
+            path, task_id=base_task.id, trial=0, seed=42, config_hash="new-config"
+        )
+        is None
+    )
     assert not path.exists()

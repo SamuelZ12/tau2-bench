@@ -796,12 +796,9 @@ def run_unit(
                     )
                     save_review_checkpoint(review_path, review_checkpoint)
                 raise
-            if (
-                review_path is not None
-                and review_checkpoint is not None
-                and result.hallucination_check is not None
-                and result.hallucination_check.review_status == "completed"
-            ):
+            # The result is delivered, so no checkpoint for this unit may
+            # survive to replace a later run of it.
+            if review_path is not None:
                 review_path.unlink(missing_ok=True)
 
         # Mark the final sim as the one used in results
