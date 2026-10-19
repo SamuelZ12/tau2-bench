@@ -226,8 +226,8 @@ custom setup in `notes` and link it in `references`. Unknown fields are rejected
 voice-v2 packages appear as rows of the τ³-Voice **τ-i18n (Multilingual)**
 leaderboard (`/leaderboard?benchmark=voice`), next to the paper cohort and
 marked "submission". They rank on task completion (pass@1, overall or for the
-selected language); Interaction and Experience are paper-cohort measures and
-show "—". A package's breakdown shows pass@1 per language × domain and each
+selected language); Interaction and Generation quality are paper-cohort
+measures and show "—". A package's breakdown shows pass@1 per language × domain and each
 judge measure per language with its coverage. Judge measures are diagnostics
 and never change the rank. 1.x and voice-v1 submissions keep their own tabs and
 are still accepted.
