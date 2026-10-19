@@ -14,6 +14,9 @@ benchmark names. Retain descriptive terms such as multilingual support and
 agent-directed elicitation, existing API/CLI identifiers (`multilingual`,
 `intake`, `--elicitation-strategy`), published paper titles, and historical
 provenance. Branding changes must not rewrite pinned data or serialized fields.
+Likewise, the τ-i18n **Experience** measure is shown publicly as **Generation
+quality**. Keep `experience` in data keys, code identifiers and the paper's
+`experience.json`.
 
 ## Setup
 

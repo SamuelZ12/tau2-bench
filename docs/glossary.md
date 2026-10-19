@@ -38,6 +38,14 @@ frozen task ID, and the trial indices. A run that covers only part of the
 frame (a slice or a `--num-tasks` sample) has no official score; the frame is the
 denominator. A saved run records its frame in `benchmark-frame.json` at the root.
 
+## Generation quality
+
+The public name for the τ-i18n measure that papers, data and code call
+**Experience** (`experience`). It is the share of aligned agent utterances
+that pass both the naturalness and the speech-fidelity checks. The
+leaderboard shows it as Generation quality. Keys such as `experience` and
+the paper's `experience.json` keep the old name.
+
 ## Judge
 
 A model-based diagnostic run after the simulation, with `tau2 judges suite`. Judges never change the task reward. Each judge is defined
