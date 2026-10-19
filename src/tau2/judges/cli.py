@@ -5,7 +5,9 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from tau2.config import DEFAULT_JUDGE_CONCURRENCY, DEFAULT_JUDGE_PROCESSES
 from tau2.data_model.judges import DiagnosticId
+from tau2.judges.suite import JudgeExecutionConfig
 from tau2.judges.summary import build_export
 
 
@@ -52,6 +54,23 @@ def add_judges_args(parser: argparse.ArgumentParser) -> None:
             help="Explicit stored trial indices; default all trials",
         )
         if name == "suite":
+            child.add_argument(
+                "--processes",
+                type=int,
+                default=DEFAULT_JUDGE_PROCESSES,
+                help="Independent judge workers; default 1",
+            )
+            child.add_argument(
+                "--concurrency",
+                type=int,
+                default=DEFAULT_JUDGE_CONCURRENCY,
+                help="Judge calls in flight per worker; default 1",
+            )
+            child.add_argument(
+                "--preserve-errors",
+                action="store_true",
+                help="Keep recorded judge errors/partials while filling missing verdicts",
+            )
             child.add_argument(
                 "--force", action="store_true", help="Recompute matching verdicts"
             )
@@ -101,6 +120,11 @@ def run_judges(args: argparse.Namespace) -> None:
         trials=args.trials,
         force=getattr(args, "force", False),
         execute=args.judge_command == "suite" and not dry_run,
+        execution=JudgeExecutionConfig(
+            processes=getattr(args, "processes", DEFAULT_JUDGE_PROCESSES),
+            concurrency=getattr(args, "concurrency", DEFAULT_JUDGE_CONCURRENCY),
+            retry_errors=not getattr(args, "preserve_errors", False),
+        ),
     )
     document = output.model_dump_json(indent=2)
     if args.judge_command == "export" or args.json:

@@ -61,8 +61,10 @@ options:
 ### `tau2 judges suite`
 
 ```text
-usage: tau2 judges suite [-h] [--only ONLY] [--trials TRIALS [TRIALS ...]] [--force]
-                         [--dry-run] [--registry REGISTRY] [--json] [--output OUTPUT]
+usage: tau2 judges suite [-h] [--only ONLY] [--trials TRIALS [TRIALS ...]]
+                         [--processes PROCESSES] [--concurrency CONCURRENCY]
+                         [--preserve-errors] [--force] [--dry-run]
+                         [--registry REGISTRY] [--json] [--output OUTPUT]
                          results
 
 positional arguments:
@@ -73,6 +75,12 @@ options:
   --only ONLY           Comma-separated measure names; default all selected measures
   --trials TRIALS [TRIALS ...]
                         Explicit stored trial indices; default all trials
+  --processes PROCESSES
+                        Independent judge workers; default 1
+  --concurrency CONCURRENCY
+                        Judge calls in flight per worker; default 1
+  --preserve-errors     Keep recorded judge errors/partials while filling missing
+                        verdicts
   --force               Recompute matching verdicts
   --dry-run             Plan without model calls or progress writes
   --registry REGISTRY   Explicit verified promotion bundle; never an unvalidated
@@ -212,12 +220,13 @@ options:
 ### `tau2 tasks subset`
 
 ```text
-usage: tau2 tasks subset [-h] --domain {airline,retail,telecom} --name NAME
+usage: tau2 tasks subset [-h] --domain
+                         {airline,retail,telecom,banking_knowledge,intake} --name NAME
                          [--size SIZE] [--seed SEED] [--dry-run]
 
 options:
   -h, --help            show this help message and exit
-  --domain {airline,retail,telecom}
+  --domain {airline,retail,telecom,banking_knowledge,intake}
   --name NAME           New artifact name; never overwritten
   --size SIZE
   --seed SEED
@@ -1027,6 +1036,7 @@ usage: tau2 run-pass3 [-h] [--communicate-scorer {semantic,substring}]
                       [--review-model REVIEW_MODEL]
                       [--hallucination-retries HALLUCINATION_RETRIES]
                       [--pass3-mode {generic,crossed}]
+                      [--regular-results REGULAR_RESULTS]
 
 options:
   -h, --help            show this help message and exit
@@ -1240,6 +1250,9 @@ options:
   --pass3-mode {generic,crossed}
                         Generic repeated trials (default), or crossed R/C/S voice
                         conditions.
+  --regular-results REGULAR_RESULTS
+                        Existing ordinary seed-42 regular results to reuse read-only
+                        in crossed mode.
 
 τ-entity (formerly elicitation; intake only):
   --elicitation-strategy {agent_directed,scaffolded}

@@ -6,6 +6,7 @@ Uses the google-genai library for real-time bidirectional audio communication.
 
 import asyncio
 import os
+import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,25 @@ GEMINI_INPUT_SAMPLE_RATE = DEFAULT_GEMINI_INPUT_SAMPLE_RATE
 GEMINI_OUTPUT_SAMPLE_RATE = DEFAULT_GEMINI_OUTPUT_SAMPLE_RATE
 GEMINI_INPUT_BYTES_PER_SECOND = GEMINI_INPUT_SAMPLE_RATE * 2  # 16-bit = 2 bytes
 GEMINI_OUTPUT_BYTES_PER_SECOND = GEMINI_OUTPUT_SAMPLE_RATE * 2
+
+
+def require_extended_thinking_sdk(model: str) -> None:
+    """Reject SDKs too old for Gemini extended-thinking Live runs."""
+    if "gemini-3.8-live-extended-thinking" not in model.lower():
+        return
+    try:
+        from google import genai
+    except ImportError as exc:
+        raise ImportError(
+            "Gemini extended thinking requires google-genai>=2.30.1"
+        ) from exc
+    version = getattr(genai, "__version__", "")
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if match is None or tuple(map(int, match.groups())) < (2, 30, 1):
+        raise ValueError(
+            "Gemini extended thinking requires google-genai>=2.30.1; "
+            f"imported google.genai {version or 'unknown'} from {genai.__file__}"
+        )
 
 
 def gemini_speech_language_code(model: str, language: Optional[str]) -> Optional[str]:
@@ -353,6 +373,8 @@ class GeminiLiveProvider:
             try:
                 from google import genai
 
+                require_extended_thinking_sdk(self.model)
+
                 if self.use_vertex_ai:
                     # Vertex AI mode - uses ADC (Application Default Credentials)
                     self._client = genai.Client(
@@ -528,7 +550,7 @@ class GeminiLiveProvider:
                 types.AudioTranscriptionConfig()
             )
 
-            # Gemini 3.1 audio EAP does not yet support proactive audio.
+            # Gemini 3.1 and 3.8 Extended Thinking do not support proactive audio.
             if DEFAULT_GEMINI_PROACTIVE_AUDIO and self._supports_proactive_audio(
                 self.model
             ):
@@ -941,6 +963,8 @@ class GeminiLiveProvider:
                     # Consume all responses from this turn
                     response_count = 0
                     deadline_forced_break = False
+                    last_response_completed_audio_turn = False
+                    interaction_completed_in_iterator = False
                     async for response in turn:
                         if self._stop_receive:
                             break
@@ -948,8 +972,37 @@ class GeminiLiveProvider:
                         response_count += 1
                         # Parse and queue events
                         events = self._parse_response(response)
+                        interaction_completed_in_iterator |= any(
+                            isinstance(event, GeminiTurnCompleteEvent)
+                            for event in events
+                        )
                         for event in events:
                             await self._event_queue.put(event)
+
+                        # An extended-thinking interaction can contain several
+                        # spoken turns in one receive() iterator. Rotate the audio
+                        # item at each turn boundary so later speech is not
+                        # discarded with an interrupted earlier item.
+                        server_content = getattr(response, "server_content", None)
+                        last_response_completed_audio_turn = bool(
+                            server_content
+                            and getattr(server_content, "turn_complete", False)
+                        )
+                        if last_response_completed_audio_turn:
+                            if not any(
+                                isinstance(event, GeminiTurnCompleteEvent)
+                                for event in events
+                            ):
+                                await self._event_queue.put(
+                                    GeminiTurnCompleteEvent(type="turn.complete")
+                                )
+                            await self._event_queue.put(
+                                GeminiAudioDoneEvent(
+                                    type="audio.done",
+                                    item_id=self._current_item_id,
+                                )
+                            )
+                            self._current_item_id = self._generate_item_id()
 
                         # If GoAway was received and the deadline is approaching,
                         # force-break to reconnect before the server disconnects us.
@@ -968,11 +1021,17 @@ class GeminiLiveProvider:
 
                     logger.debug(f"Turn completed with {response_count} responses")
 
-                    # Emit turn complete unless we force-broke mid-turn
-                    if not self._stop_receive and not deadline_forced_break:
-                        await self._event_queue.put(
-                            GeminiTurnCompleteEvent(type="turn.complete")
-                        )
+                    # Older SDKs end receive() at a turn boundary. Avoid
+                    # duplicating a boundary emitted from the final response.
+                    if (
+                        not self._stop_receive
+                        and not deadline_forced_break
+                        and not last_response_completed_audio_turn
+                    ):
+                        if not interaction_completed_in_iterator:
+                            await self._event_queue.put(
+                                GeminiTurnCompleteEvent(type="turn.complete")
+                            )
                         await self._event_queue.put(
                             GeminiAudioDoneEvent(
                                 type="audio.done",
@@ -1451,11 +1510,18 @@ class GeminiLiveProvider:
             server_content = response.server_content
             if hasattr(server_content, "interrupted") and server_content.interrupted:
                 events.append(GeminiInterruptionEvent(type="interruption"))
-            if (
-                hasattr(server_content, "turn_complete")
-                and server_content.turn_complete
-                and not self._uses_extended_thinking(self.model)
+            interaction_status = getattr(server_content, "interaction_status", None)
+            status = getattr(interaction_status, "value", interaction_status)
+            if self._uses_extended_thinking(self.model) and status not in (
+                None,
+                "INTERACTION_STATUS_UNSPECIFIED",
             ):
+                interaction_complete = status == "IDLE"
+            else:
+                interaction_complete = bool(
+                    getattr(server_content, "turn_complete", False)
+                )
+            if interaction_complete:
                 events.append(GeminiTurnCompleteEvent(type="turn.complete"))
             # Check for output transcription (what Gemini said)
             if (

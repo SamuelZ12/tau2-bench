@@ -860,7 +860,7 @@ def main():
         if args.dry_run:
             config.validate()
             print(config.model_dump_json(indent=2))
-            return
+            return config
         return run_domain(config)
 
     run_parser.set_defaults(func=run_command)
