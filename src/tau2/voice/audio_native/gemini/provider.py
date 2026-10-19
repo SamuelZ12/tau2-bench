@@ -6,6 +6,7 @@ Uses the google-genai library for real-time bidirectional audio communication.
 
 import asyncio
 import os
+import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,25 @@ GEMINI_INPUT_SAMPLE_RATE = DEFAULT_GEMINI_INPUT_SAMPLE_RATE
 GEMINI_OUTPUT_SAMPLE_RATE = DEFAULT_GEMINI_OUTPUT_SAMPLE_RATE
 GEMINI_INPUT_BYTES_PER_SECOND = GEMINI_INPUT_SAMPLE_RATE * 2  # 16-bit = 2 bytes
 GEMINI_OUTPUT_BYTES_PER_SECOND = GEMINI_OUTPUT_SAMPLE_RATE * 2
+
+
+def require_extended_thinking_sdk(model: str) -> None:
+    """Reject SDKs too old for Gemini extended-thinking Live runs."""
+    if "gemini-3.8-live-extended-thinking" not in model.lower():
+        return
+    try:
+        from google import genai
+    except ImportError as exc:
+        raise ImportError(
+            "Gemini extended thinking requires google-genai>=2.26.0"
+        ) from exc
+    version = getattr(genai, "__version__", "")
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if match is None or tuple(map(int, match.groups())) < (2, 26, 0):
+        raise ValueError(
+            "Gemini extended thinking requires google-genai>=2.26.0; "
+            f"imported google.genai {version or 'unknown'} from {genai.__file__}"
+        )
 
 
 def gemini_speech_language_code(model: str, language: Optional[str]) -> Optional[str]:
@@ -352,6 +372,8 @@ class GeminiLiveProvider:
         if self._client is None:
             try:
                 from google import genai
+
+                require_extended_thinking_sdk(self.model)
 
                 if self.use_vertex_ai:
                     # Vertex AI mode - uses ADC (Application Default Credentials)

@@ -342,6 +342,16 @@ class VoiceRunConfig(BaseRunConfig, VoiceRunSettings):
     managing the tick-based simulation.
     """
 
+    def validate(self) -> None:
+        """Validate voice-provider requirements before any simulation starts."""
+        super().validate()
+        if self.audio_native_config.provider == "gemini":
+            from tau2.voice.audio_native.gemini.provider import (
+                require_extended_thinking_sdk,
+            )
+
+            require_extended_thinking_sdk(self.audio_native_config.model)
+
     # ---- Properties ----
 
     @property

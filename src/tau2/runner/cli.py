@@ -3,6 +3,7 @@
 import argparse
 import copy
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from loguru import logger
@@ -38,13 +39,27 @@ def add_pass3_args(
         default="generic",
         help="Generic repeated trials (default), or crossed R/C/S voice conditions.",
     )
+    parser.add_argument(
+        "--regular-results",
+        type=Path,
+        help="Existing ordinary seed-42 regular results to reuse read-only in crossed mode.",
+    )
 
     def run_pass3(args: argparse.Namespace) -> object:
-        from tau2.runner.pass3 import CROSSED_CONDITIONS, summarize_crossed_pass3
+        from tau2.data_model.simulation import Results, VoiceRunConfig
+        from tau2.runner.batch import _load_run_tasks, make_voice_run_settings
+        from tau2.runner.helpers import get_info
+        from tau2.runner.pass3 import (
+            CROSSED_CONDITIONS,
+            summarize_crossed_pass3,
+            validate_regular_source,
+        )
 
         if args.num_trials not in (1, 3):
             raise ValueError("run-pass3 uses exactly three trials")
         if args.pass3_mode == "generic":
+            if args.regular_results is not None:
+                raise ValueError("--regular-results requires --pass3-mode crossed")
             generic = copy.copy(args)
             generic.num_trials = 3
             return run_command(generic)
@@ -65,11 +80,44 @@ def add_pass3_args(
         ):
             raise ValueError("Crossed Pass^3 owns both effects modes")
         results = {}
+        source_paths = {}
+        if args.regular_results is not None:
+            regular = CROSSED_CONDITIONS[0]
+            source = args.regular_results.resolve()
+            if source.is_dir():
+                source /= "results.json"
+            if not source.is_file():
+                raise FileNotFoundError(f"Regular results not found: {source}")
+            result = Results.load(source)
+            preflight = copy.copy(args)
+            preflight.benchmark = "none"
+            preflight.seed = regular.seed
+            preflight.voice_sampling_seed = None
+            preflight.pass3_condition = None
+            preflight.dry_run = True
+            preflight.save_to = f"{args.save_to}_{regular.label}"
+            config = run_command(preflight)
+            if not isinstance(config, VoiceRunConfig):
+                raise ValueError("Crossed Pass^3 regular preflight needs a voice run")
+            tasks = _load_run_tasks(config)
+            voice_settings, persona_config = make_voice_run_settings(config)
+            expected_info = get_info(
+                config,
+                tasks=tasks,
+                user_voice_settings=voice_settings,
+                user_persona_config=persona_config,
+            )
+            validate_regular_source(result, expected_info, tasks)
+            results[regular.label] = result
+            source_paths[regular.label] = str(source)
         for condition in CROSSED_CONDITIONS:
+            if condition.label in results:
+                continue
             selected = copy.copy(args)
             selected.benchmark = "none"
             selected.num_trials = 1
-            selected.voice_sampling_seed = condition.seed
+            selected.seed = condition.seed
+            selected.voice_sampling_seed = None
             selected.channel_effects_mode = condition.channel_effects_mode
             selected.speech_effects_mode = condition.speech_effects_mode
             selected.pass3_condition = condition.label
@@ -78,6 +126,14 @@ def add_pass3_args(
             result = run_command(selected)
             if not args.dry_run:
                 results[condition.label] = result
+            from tau2.utils import DATA_DIR
+
+            source_paths[condition.label] = str(
+                DATA_DIR
+                / "simulations"
+                / f"{args.save_to}_{condition.label}"
+                / "results.json"
+            )
         if args.dry_run:
             return None
 
@@ -85,21 +141,14 @@ def add_pass3_args(
 
         report = summarize_crossed_pass3(
             results,
-            {
-                condition.label: str(
-                    DATA_DIR
-                    / "simulations"
-                    / f"{args.save_to}_{condition.label}"
-                    / "results.json"
-                )
-                for condition in CROSSED_CONDITIONS
-            },
+            source_paths,
         )
         report_file = DATA_DIR / "simulations" / f"{args.save_to}_pass3.json"
         report_file.parent.mkdir(parents=True, exist_ok=True)
         report_file.write_text(report.model_dump_json(indent=2) + "\n")
         print(
-            f"Crossed Pass^3: {report.passed_all}/{report.total_tasks} "
+            f"Crossed Pass^3: {report.passed_all}/{report.scored_tasks} scored "
+            f"({len(report.infrastructure_error_task_ids)} infrastructure errors) "
             f"({report.pass3:.1%}); {report_file}"
         )
         return report
