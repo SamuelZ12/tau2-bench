@@ -4,7 +4,7 @@ Welcome to the τ-bench release notes! Here you'll find user-friendly summaries 
 
 ## Version 2.0.0 - Multilingual and Voice 🌐
 
-**Release Date**: TBD
+**Release Date**: October 19, 2026
 
 ### ⚠️ Scores are not comparable with 1.x
 
