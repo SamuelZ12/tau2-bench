@@ -9,12 +9,14 @@ from pydantic import Discriminator, Field, Tag
 
 from tau2.config import (
     DEFAULT_AUDIO_NATIVE_MODELS,
+    DEFAULT_BANKING_RETRIEVAL_CONFIG,
     DEFAULT_BENCHMARK_USER_ARGS,
     DEFAULT_BENCHMARK_USER_MODEL,
     DEFAULT_LANGUAGE,
     DEFAULT_VOICE_BENCHMARK,
     DEFAULT_VOICE_BENCHMARK_MAX_STEPS_SECONDS,
     DEFAULT_VOICE_BENCHMARK_OPENAI_VOICE,
+    ELICITATION_DOMAINS,
 )
 from tau2.data_model.benchmark import (
     BenchmarkFrame,
@@ -31,6 +33,7 @@ from tau2.data_model.run_config import AudioNativeConfig
 from tau2.data_model.simulation import RunConfig, TextRunConfig, VoiceRunConfig
 
 if TYPE_CHECKING:
+    from tau2.data_model.language import TaskSelection
     from tau2.multilingual.runtime import LoadedLanguage
 
 
@@ -118,6 +121,39 @@ def binding_revision(loaded: "LoadedLanguage") -> str:
     ).hexdigest()
 
 
+def cell_selection(domain: str) -> "TaskSelection | None":
+    """The frozen task-loader selection a released cell pins.
+
+    Elicitation cells pin the default strategy's task variant, so a released
+    entity frame cannot silently mix strategies.
+    """
+    if domain not in ELICITATION_DOMAINS:
+        return None
+    from tau2.data_model.elicitation import ElicitationConfig
+    from tau2.data_model.language import TaskSelection
+
+    return TaskSelection(task_kwargs={"strategy": ElicitationConfig().strategy.value})
+
+
+def load_cell_language(
+    language: str, domain: str, mode: str, *, canonical_tasks: bool = False
+) -> "LoadedLanguage":
+    """Load one released cell's binding exactly as the benchmark pins it.
+
+    Domains outside the base pack resolve through their published extension.
+    """
+    from tau2.multilingual.runtime import extension_for_domain, load_language
+
+    return load_language(
+        language,
+        domain,
+        mode=mode,
+        selection=cell_selection(domain),
+        pack_extension=extension_for_domain(language, domain),
+        canonical_tasks=canonical_tasks,
+    )
+
+
 def resolve_configs(
     frame: BenchmarkFrame,
     template: RunConfig,
@@ -132,10 +168,13 @@ def resolve_configs(
     installed languages cannot silently enter a released benchmark. Selection filters only choose
     which cells to run, while the returned frame retains the full denominator.
     """
-    from tau2.multilingual.runtime import load_language
+    from tau2.multilingual.runtime import run_task_selection
 
     if template.pack_extension is not None:
-        raise ValueError("Pack extensions are for separate custom runs only")
+        raise ValueError(
+            "Released benchmarks select their own pack extensions; "
+            "use --benchmark none for a custom extension"
+        )
     if not template.effective_localize_db:
         raise ValueError(
             "Released benchmarks require regional scenarios; use --benchmark none with --no-localize-db for canonical scenarios in the selected language"
@@ -189,10 +228,10 @@ def resolve_configs(
     selected_cells = []
     for cell in frame.cells:
         # Pin every official binding, even for a filtered execution plan.
-        loaded = load_language(
+        loaded = load_cell_language(
             cell.language,
             cell.domain,
-            mode=frame.mode,
+            frame.mode,
             canonical_tasks=frame.benchmark_version == "voice-v1",
         )
         if binding_revision(loaded) != cell.binding_revision:
@@ -237,9 +276,11 @@ def resolve_configs(
                 "model",
                 DEFAULT_AUDIO_NATIVE_MODELS[template.audio_native_config.provider],
             )
-            audio_values.setdefault(
-                "max_steps_seconds", DEFAULT_VOICE_BENCHMARK_MAX_STEPS_SECONDS
-            )
+            if cell.domain not in ELICITATION_DOMAINS:
+                # Elicitation calls keep their domain's own call-length default.
+                audio_values.setdefault(
+                    "max_steps_seconds", DEFAULT_VOICE_BENCHMARK_MAX_STEPS_SECONDS
+                )
             if template.audio_native_config.provider == "openai":
                 audio_values.setdefault("voice", DEFAULT_VOICE_BENCHMARK_OPENAI_VOICE)
         values.update(
@@ -253,9 +294,24 @@ def resolve_configs(
             auto_resume=True,
             save_to=str(output_root.resolve() / f"{cell.language}-{cell.domain}"),
             benchmark=None,
+            pack_extension=loaded.pack_extension,
             language_artifacts=loaded.artifact_pins,
         )
         config = type(template).model_validate(values)
+        selection = cell_selection(cell.domain)
+        if selection is not None and run_task_selection(config) != selection:
+            raise ValueError(
+                f"Released {cell.domain} cells use the default elicitation strategy; "
+                "use --benchmark none for other strategies"
+            )
+        if cell.domain == "banking_knowledge" and (
+            config.retrieval_config != DEFAULT_BANKING_RETRIEVAL_CONFIG
+            or config.retrieval_config_kwargs
+        ):
+            raise ValueError(
+                f"Released banking cells use the {DEFAULT_BANKING_RETRIEVAL_CONFIG} "
+                "retrieval config; use --benchmark none for other retrieval settings"
+            )
         common = encode_conditions(config)
         condition = hashlib.sha256(
             json.dumps(
@@ -544,7 +600,6 @@ def pin_manifest(
     pack binding in the manifest's call mode. With ``source``, a new manifest is
     derived from an existing one (same cells and subsets) for another mode.
     """
-    from tau2.multilingual.runtime import load_language
     from tau2.task_subsets.store import subset_path
 
     if source is not None:
@@ -576,10 +631,10 @@ def pin_manifest(
         cell.model_copy(
             update={
                 "binding_revision": binding_revision(
-                    load_language(
+                    load_cell_language(
                         cell.language,
                         cell.domain,
-                        mode=call_mode,
+                        call_mode,
                         canonical_tasks=(benchmark_version or base.benchmark_version)
                         == "voice-v1",
                     )

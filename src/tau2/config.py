@@ -30,6 +30,9 @@ DEFAULT_LLM_ARGS_USER = {"temperature": DEFAULT_LLM_TEMPERATURE_USER}
 
 # English elicitation defaults. Other domains retain the defaults above.
 ELICITATION_DOMAINS = frozenset({"intake"})
+# Retrieval config for banking_knowledge runs that do not choose one; the
+# released banking benchmark requires it.
+DEFAULT_BANKING_RETRIEVAL_CONFIG = "alltools"
 DEFAULT_ELICITATION_STRATEGY = "agent_directed"
 DEFAULT_ELICITATION_COMPLICATION_RATE = 1.0
 DEFAULT_ELICITATION_MAX_STEPS_SECONDS = 240

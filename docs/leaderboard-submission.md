@@ -6,8 +6,9 @@ benchmark generation:
 
 | You ran | Package | Leaderboard tab | Section |
 |---|---|---|---|
-| `text-v1` (2.0 text, 18 cells) | `benchmark-submission.json` | 2.0 | [2.0 benchmarks](#20-benchmarks-text-v1-and-voice-v2) |
-| `voice-v2` (2.0 voice, τ-i18n, 18 cells) | `benchmark-submission.json` + `benchmark-diagnostics.json` | 2.0 | [2.0 benchmarks](#20-benchmarks-text-v1-and-voice-v2) |
+| `text-v1` (2.0 text, 18 cells) | `benchmark-submission.json` | 2.0 | [2.0 benchmarks](#20-benchmarks-text-v1-voice-v2-banking-and-entity) |
+| `voice-v2` (2.0 voice, τ-i18n, 18 cells) | `benchmark-submission.json` + `benchmark-diagnostics.json` | 2.0 | [2.0 benchmarks](#20-benchmarks-text-v1-voice-v2-banking-and-entity) |
+| `voice-v2-banking` / `voice-v2-entity` (6 languages) | `benchmark-submission.json` | 2.0 (Banking, Intake) | [Banking and τ-entity](#banking-and-τ-entity-voice) |
 | `voice-v1` (English voice, 3 domains) | `submission.json` | English voice | [voice-v1](#voice-v1-english-voice) |
 | 1.x text or voice (v1.0.1) | `submission.json` | 1.x | [1.x submissions](#1x-submissions) |
 
@@ -67,7 +68,7 @@ changed.
 
 ---
 
-## 2.0 benchmarks (text-v1 and voice-v2)
+## 2.0 benchmarks (text-v1, voice-v2, banking and entity)
 
 A 2.0 submission is built from one saved matrix root. `tau2 submit prepare`
 detects the benchmark from the root's `benchmark-frame.json`, so `--benchmark`
@@ -137,6 +138,36 @@ tau2 submit validate ./submissions/<name> --results data/simulations/text-run
 The leaderboard has no 2.0 text tab yet. Text-v1 packages validate the same
 way, but `manifest.json` has no entry for them; open an issue before submitting
 one.
+
+### Banking and τ-entity (voice)
+
+`voice-v2-banking` (`--benchmark banking`, 582 calls) and `voice-v2-entity`
+(`--benchmark entity`, 1200 calls) cover all six languages. Each is its own
+matrix root and its own package, scored on rewards only.
+
+```bash
+# 1. Run the released benchmark (repeat the same command to resume).
+tau2 run --audio-native --benchmark banking --audio-native-model <model> --save-to banking-run
+tau2 run --audio-native --benchmark entity --audio-native-model <model> --save-to entity-run
+
+# 2. Build each package (rewards only; no judges needed).
+tau2 submit prepare data/simulations/banking-run --output ./submissions \
+  --metadata-file ./submitter.json
+
+# 3. Recompute rewards from the saved matrix.
+tau2 submit validate ./submissions/<name> --results data/simulations/banking-run
+```
+
+Banking always runs with the `alltools` retrieval config, and entity with the
+agent-directed strategy. Other retrieval configs and the scaffolded strategy
+are custom runs (`--benchmark none`) and have no 2.0 package.
+
+Submit each package as for voice-v2 (see [Submit a 2.0 package](#submit-a-20-package)),
+but list it in the `voice_v2_domain_submissions` array of `manifest.json`. It
+fills the Banking or Intake row of your voice-v2 row when the model name,
+organization, agent provider, agent model and submission type all match; it
+never changes Overall. A banking or entity package without a voice-v2 package
+is shown only when its domain is selected.
 
 ### What the 2.0 package contains
 

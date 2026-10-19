@@ -2,7 +2,7 @@ import { Fragment, useRef, useState } from 'react'
 import data from '../data/multilingual/results.json'
 import { summarize, frontier, percent, mean, heatScale } from '../data/multilingual/metrics'
 import PackageBreakdown from './PackageBreakdown'
-import { packageLogo, packageScore, toPercent, useVoiceV2Packages } from '../data/voiceV2Packages'
+import { domainScore, packageLogo, packageScore, useVoiceV2Packages } from '../data/voiceV2Packages'
 import './MultilingualVoice.css'
 
 const metrics = [['task', 'Task completion'], ['interaction', 'Interaction'], ['experience', 'Experience']]
@@ -257,9 +257,12 @@ export default function MultilingualVoice({ submissionTypeFilters, showStandard 
   const rows = data.models.map(model => forDomain(summarize(model, language), domain))
   // Submitted voice-v2 packages join the paper cohort as rows scored on task
   // completion only; Interaction and Experience are paper-cohort measures.
+  // Banking and entity packages fill their domain on the same agent's row; one
+  // without a voice-v2 package appears only under its own domain.
   const { packages, errors: packageErrors } = useVoiceV2Packages()
   const [openPackage, setOpenPackage] = useState(null)
-  const packageRows = (packages || []).map(pkg => ({ id: `package:${pkg.dir}`, pkg, name: pkg.metadata.model_name, submissionType: pkg.metadata.submission_type, task: domain === 'all' ? packageScore(pkg, language) : toPercent(pkg.submission.summary.by_domain[domain]?.score), interaction: null, experience: null }))
+  const packageRows = (packages || []).map(pkg => ({ id: `package:${pkg.dir}`, pkg, name: pkg.metadata.model_name, submissionType: pkg.metadata.submission_type, task: domain === 'all' ? packageScore(pkg, language) : domainScore(pkg, domain), interaction: null, experience: null }))
+    .filter(row => row.pkg.submission || row.task != null)
   const leaderboardRows = [...rows, ...packageRows].filter(row => (row.submissionType || 'standard') === 'custom' ? showCustom : showStandard)
   const active = rows.find(row => row.id === selected)
   return <section className="mv" aria-label="Multilingual voice benchmark">

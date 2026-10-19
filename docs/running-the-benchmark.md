@@ -6,16 +6,18 @@ scored and judged. To submit results afterwards, see the
 [submission guide](leaderboard-submission.md). Terms such as *cell*, *frame* and
 *pin* are defined in the [glossary](glossary.md).
 
-## The three benchmarks
+## The benchmarks
 
 A released benchmark is a [benchmark manifest](glossary.md#benchmark-manifest)
-under `data/tau2/benchmarks/`. Three ship with 2.0:
+under `data/tau2/benchmarks/`. Five ship with 2.0:
 
 | Benchmark | Manifest | Mode | Languages | Domains and tasks | Calls at 1 trial |
 |---|---|---|---|---|---|
 | `text-v1` | `text.json` | text | en, es, pt, hi, zh, ko | airline, retail, telecom; 50 frozen tasks each | 900 |
 | `voice-v2` (τ-i18n) | `voice.json` | voice | en, es, pt, hi, zh, ko | airline, retail, telecom; 50 frozen tasks each | 900 |
 | `voice-v1` | `voice-v1.json` | voice | en | airline 50, retail 114, telecom 114 | 278 |
+| `voice-v2-banking` | `banking.json` | voice | en, es, pt, hi, zh, ko | banking_knowledge; all 97 tasks | 582 |
+| `voice-v2-entity` (τ-entity) | `entity.json` | voice | en, es, pt, hi, zh, ko | intake; all 200 tasks | 1200 |
 
 - `text-v1` and `voice-v2` cover the same 18 [cells](glossary.md#cell)
   (6 languages × 3 domains) and the same frozen task subsets (`airline_50`,
@@ -24,6 +26,11 @@ under `data/tau2/benchmarks/`. Three ship with 2.0:
   from the same pack.
 - `voice-v1` is the English-only voice frame used by the current English voice
   leaderboard. It uses the original registry tasks and refuses partial runs.
+- `voice-v2-banking` and `voice-v2-entity` score domains that sit outside the
+  voice-v2 overall. Non-English cells bind the published pack extensions
+  (`banking-dates-v1`, `intake`); the extension revision is part of each
+  binding pin. Banking always uses the `alltools` retrieval config. Entity uses
+  the default agent-directed strategy and keeps its own 240-second call limit.
 - English is a language pack like any other. A run with no `--language` uses
   the English pack.
 
@@ -33,6 +40,8 @@ How `tau2 run` picks a benchmark:
 |---|---|
 | `tau2 run --audio-native ...` | `voice` (voice-v2) by default |
 | `tau2 run --audio-native --benchmark voice-v1 ...` | voice-v1 |
+| `tau2 run --audio-native --benchmark banking ...` | voice-v2-banking |
+| `tau2 run --audio-native --benchmark entity ...` | voice-v2-entity |
 | `tau2 run --benchmark text ...` | text-v1 |
 | `tau2 run ...` (text, no `--benchmark`) | none: a custom single-domain run |
 | `tau2 run ... --benchmark none` | none: a custom single-domain run, text or voice |
@@ -116,6 +125,20 @@ tau2 run --audio-native --benchmark voice-v1 \
 `--domain` selects whole domains. `--num-tasks` and `--task-ids` are rejected;
 for an English sample use `--benchmark none --language en`.
 
+## Run banking and τ-entity
+
+```bash
+# All 97 banking tasks in all six languages: 582 calls.
+tau2 run --audio-native --benchmark banking --save-to banking-run
+
+# All 200 entity tasks in all six languages: 1200 calls.
+tau2 run --audio-native --benchmark entity --save-to entity-run
+```
+
+`--retrieval-config` other than `alltools` and `--elicitation-strategy
+scaffolded` are custom runs; use `--benchmark none` for them. Slices and
+samples work as for voice-v2.
+
 ## Run a slice or a sample
 
 Slices and samples are useful for smoke tests. They have no official score (see
@@ -157,9 +180,9 @@ tau2 run --audio-native --benchmark none --domain banking_knowledge \
   --retrieval-config bm25 --num-tasks 2
 ```
 
-**τ-entity (`intake`)** is not part of the three manifests. Its default
-agent-directed strategy is voice-only. The scaffolded ablation also runs in
-text:
+The released τ-entity frame is `--benchmark entity`. Its default
+agent-directed strategy is voice-only. The scaffolded ablation is a custom run
+and also runs in text:
 
 ```bash
 tau2 run --audio-native --benchmark none --domain intake --num-tasks 2
@@ -173,11 +196,11 @@ See [τ-entity](elicitation.md) for its task set and defaults.
 These are the values in `src/tau2/config.py` and `src/tau2/runner/presets.py`.
 An explicit flag always wins.
 
-| Setting | Released benchmark (text-v1, voice-v2, voice-v1) | Custom run (`--benchmark none`) |
+| Setting | Released benchmark (text-v1, voice-v2, voice-v1, banking, entity) | Custom run (`--benchmark none`) |
 |---|---|---|
 | User simulator | `openai/gpt-5.5`, `reasoning_effort: low` | `gpt-4.1-2025-04-14`, temperature 0 (intake: `gpt-5.5`, low) |
 | Text agent | `gpt-4.1-2025-04-14` unless `--agent-llm` is given | same |
-| Voice call limit (`--max-steps-seconds`) | 2400 simulated seconds | 1200 (intake: 240) |
+| Voice call limit (`--max-steps-seconds`) | 2400 simulated seconds (entity: 240) | 1200 (intake: 240) |
 | OpenAI Realtime agent voice (`--voice`) | `marin` | provider default |
 | Trials (`--num-trials`) | 1 | 1 |
 | Workers (`--workers`) | 1 worker process (`0` is raised to 1) | in-process |

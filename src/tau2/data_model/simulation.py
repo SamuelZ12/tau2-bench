@@ -12,6 +12,7 @@ from typing_extensions import Annotated
 from tau2.config import (
     DEFAULT_AUDIO_NATIVE_AGENT_IMPLEMENTATION,
     DEFAULT_AUDIO_NATIVE_USER_IMPLEMENTATION,
+    DEFAULT_BANKING_RETRIEVAL_CONFIG,
     DEFAULT_ELICITATION_LLM_ARGS_USER,
     DEFAULT_ELICITATION_LLM_USER,
     DEFAULT_ELICITATION_MAX_STEPS_SECONDS,
@@ -173,7 +174,9 @@ class BaseRunConfig(RunSettings):
     def _default_banking_retrieval_config(self) -> "BaseRunConfig":
         """Default retrieval_config to alltools for banking_knowledge."""
         if self.domain == "banking_knowledge" and self.retrieval_config is None:
-            object.__setattr__(self, "retrieval_config", "alltools")
+            object.__setattr__(
+                self, "retrieval_config", DEFAULT_BANKING_RETRIEVAL_CONFIG
+            )
         return self
 
     @model_validator(mode="after")
@@ -290,12 +293,8 @@ class BaseRunConfig(RunSettings):
 
     def validate(self) -> None:
         """Validate executable benchmark conditions before starting providers."""
-        if self.pack_extension is not None and (
-            self.benchmark is not None or not self.effective_localize_db
-        ):
-            raise ValueError(
-                "pack extensions require a localized language in a custom run"
-            )
+        if self.pack_extension is not None and not self.effective_localize_db:
+            raise ValueError("pack extensions require a localized language")
         if (
             self.benchmark is not None
             and self.communicate_scoring.scorer != CommunicateScorer.SEMANTIC

@@ -2,11 +2,12 @@
 
 import argparse
 import re
+from typing import get_args
 
 from pydantic import TypeAdapter
 
 from tau2.task_subsets.sampler import build_subset
-from tau2.task_subsets.schema import DrawRequest, TaskSubset, Verification
+from tau2.task_subsets.schema import Domain, DrawRequest, TaskSubset, Verification
 from tau2.task_subsets.store import (
     list_subsets,
     load_frame,
@@ -34,9 +35,7 @@ def add_tasks_args(
     verify.add_argument("--name", help="One artifact; omitted verifies every artifact")
     verify.set_defaults(func=run_tasks_verify)
     draw = sub.add_parser("subset", help="Publish a seeded draw under a new name")
-    draw.add_argument(
-        "--domain", choices=("airline", "retail", "telecom"), required=True
-    )
+    draw.add_argument("--domain", choices=get_args(Domain), required=True)
     draw.add_argument(
         "--name", required=True, help="New artifact name; never overwritten"
     )

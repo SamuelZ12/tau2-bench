@@ -1,10 +1,11 @@
 import multilingual from '../data/multilingual/results.json'
 import { heatScale, percent } from '../data/multilingual/metrics'
-import { toPercent } from '../data/voiceV2Packages'
+import { domainScore, toPercent } from '../data/voiceV2Packages'
 import './MultilingualVoice.css'
 
-// Breakdown of one submitted voice-v2 package, opened from its row in the
-// multilingual leaderboard (MultilingualVoice).
+// Breakdown of one submitted voice-v2 package and any banking or entity
+// packages of the same agent, opened from its row in the multilingual
+// leaderboard (MultilingualVoice).
 const languageName = Object.fromEntries(multilingual.languages.map(item => [item.id, item.name]))
 const domainName = { airline: 'Airline', retail: 'Retail', telecom: 'Telecom', banking_knowledge: 'Banking', intake: 'Intake' }
 const extraDomains = ['banking_knowledge', 'intake']
@@ -59,15 +60,15 @@ function Heatmap({ title, rowLabel, rows, columns, note }) {
 }
 
 export default function PackageBreakdown({ pkg, onClose }) {
-  const { summary } = pkg.submission
-  const languages = [...new Set(pkg.submission.frame.cells.map(cell => cell.language))]
-  const domains = Object.keys(summary.by_domain)
-  const domainRow = domain => ({ key: domain, label: label(domainName, domain), extra: extraDomains.includes(domain), value: language => (language === 'all' ? toPercent(summary.by_domain[domain]?.score) : cellScore(language, domain)) })
-  const cellScore = (language, domain) => toPercent(summary.cells.find(cell => cell.language === language && cell.domain === domain)?.score)
+  const summary = pkg.submission?.summary
+  const parts = [pkg.submission && pkg, ...Object.values(pkg.extras || {})].filter(Boolean)
+  const languages = [...new Set(parts.flatMap(part => part.submission.frame.cells.map(cell => cell.language)))]
+  const domains = summary ? Object.keys(summary.by_domain) : []
+  const domainRow = domain => ({ key: domain, label: label(domainName, domain), extra: extraDomains.includes(domain), value: language => domainScore(pkg, domain, language) })
   const columns = [...languages.map(key => ({ key, label: label(languageName, key) })), { key: 'all', label: 'Overall' }]
   const taskRows = [
     ...domains.filter(domain => !extraDomains.includes(domain)).map(domainRow),
-    { key: 'all', label: 'Overall', value: language => toPercent(language === 'all' ? summary.score : summary.by_language[language].score) },
+    { key: 'all', label: 'Overall', value: language => summary ? toPercent(language === 'all' ? summary.score : summary.by_language[language]?.score) : null },
     ...extraDomains.map(domainRow),
   ]
   const judged = measureTable(pkg.diagnostics)
@@ -86,22 +87,22 @@ export default function PackageBreakdown({ pkg, onClose }) {
   })
   const { metadata } = pkg
   return <div className="mv-detail" id={`v2-breakdown-${pkg.dir}`}>
-    <div className="mv-detail-heading"><span><strong>{metadata.model_name}</strong></span><div className="mv-breakdown-meta"><span>Submitted package · {summary.scored_trials} scored calls · {pkg.submission.frame.cells.length} cells</span><button className="mv-close-breakdown" aria-label="Close breakdown" onClick={onClose}>×</button></div></div>
+    <div className="mv-detail-heading"><span><strong>{metadata.model_name}</strong></span><div className="mv-breakdown-meta"><span>Submitted {parts.length > 1 ? `${parts.length} packages` : 'package'} · {parts.reduce((total, part) => total + part.submission.summary.scored_trials, 0)} scored calls · {parts.reduce((total, part) => total + part.submission.frame.cells.length, 0)} cells</span><button className="mv-close-breakdown" aria-label="Close breakdown" onClick={onClose}>×</button></div></div>
     <Heatmap title="Task completion (pass@1)" rowLabel="Domain" rows={taskRows} columns={columns} note="Mean task reward · cells weighted equally" />
     {pkg.diagnostics && <Heatmap title="Judge measures" rowLabel="Measure" rows={judgeRows} columns={columns} note="Share of judged opportunities without a violation · diagnostics only, not in the score" />}
     <div className="mv-factor-notes">
       {gaps.length > 0 && <p className="mv-footnote">Judge coverage gaps (judged / applicable calls): {gaps.join(' · ')}. Calls without a usable verdict are excluded, never counted as failures.</p>}
       <p className="mv-footnote">Shading is relative to the lowest and highest values in each table. Banking and Intake are shown below Overall for reference; “—” means not evaluated.</p>
-      <p className="mv-footnote">“—” in judge measures means the measure does not apply to that language. Judge catalog <code>{pkg.diagnostics?.catalog_revision}</code>.</p>
+      {pkg.diagnostics && <p className="mv-footnote">“—” in judge measures means the measure does not apply to that language. Judge catalog <code>{pkg.diagnostics.catalog_revision}</code>.</p>}
       <dl className="v2-meta">
         <dt>Agent</dt><dd>{metadata.agent_provider} · <code>{metadata.agent_model}</code></dd>
         <dt>Submitted by</dt><dd>{metadata.submitting_organization} · {metadata.submission_date}</dd>
-        <dt>Benchmark</dt><dd>{summary.benchmark_version} · frame <code>{summary.frame_revision}</code></dd>
+        <dt>Benchmark</dt><dd>{parts.map(part => <span key={part.dir} className="v2-benchmark">{part.submission.summary.benchmark_version} · frame <code>{part.submission.summary.frame_revision}</code></span>)}</dd>
         {metadata.notes && <><dt>Notes</dt><dd>{metadata.notes}</dd></>}
         {metadata.references?.length > 0 && <><dt>References</dt><dd>{metadata.references.map(ref => <a key={ref.url} href={ref.url} target="_blank" rel="noopener noreferrer">{ref.title} ↗</a>)}</dd></>}
-        <dt>Trajectories</dt><dd>{metadata.trajectories
-          ? <code className="v2-command">aws s3 sync {metadata.trajectories}/trajectories/&lt;language&gt;/&lt;domain&gt;/ ./{pkg.dir} --no-sign-request</code>
-          : 'Not yet uploaded'}</dd>
+        <dt>Trajectories</dt><dd>{parts.map(part => part.metadata.trajectories
+          ? <code key={part.dir} className="v2-command">aws s3 sync {part.metadata.trajectories}/trajectories/&lt;language&gt;/&lt;domain&gt;/ ./{part.dir} --no-sign-request</code>
+          : <span key={part.dir}>{part.submission.summary.benchmark_version}: not yet uploaded</span>)}</dd>
       </dl>
     </div>
   </div>

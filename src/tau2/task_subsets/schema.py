@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from tau2.data_model.tasks import Task
 
-Domain = Literal["airline", "retail", "telecom"]
+Domain = Literal["airline", "retail", "telecom", "banking_knowledge", "intake"]
 SubsetName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Count = Annotated[int, Field(ge=0, strict=True)]
