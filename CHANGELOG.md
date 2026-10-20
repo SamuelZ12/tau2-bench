@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-10-19
 
 > **⚠️ Scoring change — scores are not comparable with 1.x.** Communication checks,
 > NL-assertion judging, tool-argument lookup and the English prompts all changed.
